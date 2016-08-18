@@ -254,15 +254,15 @@ func ParseExtendedCommunities(input string) ([]bgp.ExtendedCommunityInterface, e
 	for i, idx := range idxs {
 		var a []string
 		f := ExtCommParserMap[idx.t]
-		if f == nil {
-			continue
-		}
 		if i < len(idxs)-1 {
 			a = args[:idxs[i+1].i-idx.i]
 			args = args[(idxs[i+1].i - idx.i):]
 		} else {
 			a = args
 			args = nil
+		}
+		if f == nil {
+			continue
 		}
 		ext, err := f(a)
 		if err != nil {
@@ -767,6 +767,7 @@ func modPath(resource api.Resource, name, modtype string, args []string) error {
 		for _, v := range bgp.ProtocolNameMap {
 			ss = append(ss, v)
 		}
+		ss = append(ss, "<VALUE>")
 		protos := strings.Join(ss, ", ")
 		ss = make([]string, 0, len(bgp.TCPFlagNameMap))
 		for _, v := range bgp.TCPFlagNameMap {

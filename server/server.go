@@ -104,7 +104,7 @@ type BgpServer struct {
 	watcherMap  map[WatchEventType][]*Watcher
 	zclient     *zebraClient
 	bmpManager  *bmpClientManager
-	mrt         *mrtWriter
+	mrtManager  *mrtManager
 }
 
 func NewBgpServer() *BgpServer {
@@ -117,6 +117,7 @@ func NewBgpServer() *BgpServer {
 		watcherMap:  make(map[WatchEventType][]*Watcher),
 	}
 	s.bmpManager = newBmpClientManager(s)
+	s.mrtManager = newMrtManager(s)
 	return s
 }
 
@@ -339,6 +340,17 @@ func filterpath(peer *Peer, path *table.Path, withdrawals []*table.Path) *table.
 		}
 
 		if ignore {
+
+			for _, adv := range peer.adjRibOut.PathList([]bgp.RouteFamily{path.GetRouteFamily()}, false) {
+				// we advertise a route from ebgp,
+				// which is the old best. We got the
+				// new best from ibgp. We don't
+				// advertise the new best and need to
+				// withdraw the old.
+				if path.GetNlri().String() == adv.GetNlri().String() {
+					return adv.Clone(true)
+				}
+			}
 			log.WithFields(log.Fields{
 				"Topic": "Peer",
 				"Key":   peer.ID(),
@@ -1173,7 +1185,8 @@ func (s *BgpServer) Start(c *config.Global) (err error) {
 
 		rfs, _ := config.AfiSafis(c.AfiSafis).ToRfList()
 		s.globalRib = table.NewTableManager(rfs, c.MplsLabelRange.MinLabel, c.MplsLabelRange.MaxLabel)
-		if err = s.policy.Reset(&config.RoutingPolicy{}, map[string]config.ApplyPolicy{table.GLOBAL_RIB_NAME: c.ApplyPolicy}); err != nil {
+
+		if err = s.policy.Reset(&config.RoutingPolicy{}, map[string]config.ApplyPolicy{}); err != nil {
 			return
 		}
 		s.bgpConfig.Global = *c
@@ -1666,7 +1679,15 @@ func (server *BgpServer) addNeighbor(c *config.Neighbor) error {
 
 	if server.bgpConfig.Global.Config.Port > 0 {
 		for _, l := range server.Listeners(addr) {
-			SetTcpMD5SigSockopts(l, addr, c.Config.AuthPassword)
+			if err := SetTcpMD5SigSockopts(l, addr, c.Config.AuthPassword); err != nil {
+				log.WithFields(log.Fields{
+					"Topic": "Peer",
+				}).Debugf("failed to set md5 %s %s", addr, err)
+			} else {
+				log.WithFields(log.Fields{
+					"Topic": "Peer",
+				}).Debugf("successfully set md5 %s", addr)
+			}
 		}
 	}
 	log.WithFields(log.Fields{
@@ -2195,40 +2216,26 @@ func (s *BgpServer) ReplacePolicyAssignment(name string, dir table.PolicyDirecti
 	return err
 }
 
-func (s *BgpServer) EnableMrt(c *config.Mrt) (err error) {
+func (s *BgpServer) EnableMrt(c *config.MrtConfig) (err error) {
 	ch := make(chan struct{})
 	defer func() { <-ch }()
 
 	s.mgmtCh <- func() {
 		defer close(ch)
 
-		if s.mrt != nil {
-			err = fmt.Errorf("already enabled")
-		} else {
-			interval := c.Interval
-
-			if interval != 0 && interval < 30 {
-				log.Info("minimum mrt dump interval is 30 seconds")
-				interval = 30
-			}
-			s.mrt, err = newMrtWriter(s, c.DumpType.ToInt(), c.FileName, interval)
-		}
+		err = s.mrtManager.enable(c)
 	}
 	return err
 }
 
-func (s *BgpServer) DisableMrt() (err error) {
+func (s *BgpServer) DisableMrt(c *config.MrtConfig) (err error) {
 	ch := make(chan struct{})
 	defer func() { <-ch }()
 
 	s.mgmtCh <- func() {
 		defer close(ch)
 
-		if s.mrt != nil {
-			s.mrt.Stop()
-		} else {
-			err = fmt.Errorf("not enabled")
-		}
+		err = s.mrtManager.disable(c)
 	}
 	return err
 }
@@ -2361,6 +2368,7 @@ const (
 	WATCH_EVENT_TYPE_PRE_UPDATE  WatchEventType = "preupdate"
 	WATCH_EVENT_TYPE_POST_UPDATE WatchEventType = "postupdate"
 	WATCH_EVENT_TYPE_PEER_STATE  WatchEventType = "peerstate"
+	WATCH_EVENT_TYPE_TABLE       WatchEventType = "table"
 )
 
 type WatchEvent interface {
@@ -2399,6 +2407,12 @@ type WatchEventAdjIn struct {
 	PathList []*table.Path
 }
 
+type WatchEventTable struct {
+	RouterId string
+	PathList map[string][]*table.Path
+	Neighbor []*config.Neighbor
+}
+
 type WatchEventBestPath struct {
 	PathList      []*table.Path
 	MultiPathList [][]*table.Path
@@ -2412,6 +2426,7 @@ type watchOptions struct {
 	initUpdate     bool
 	initPostUpdate bool
 	initPeerState  bool
+	tableName      string
 }
 
 type WatchOption func(*watchOptions)
@@ -2449,6 +2464,12 @@ func WatchPeerState(current bool) WatchOption {
 	}
 }
 
+func WatchTableName(name string) WatchOption {
+	return func(o *watchOptions) {
+		o.tableName = name
+	}
+}
+
 type Watcher struct {
 	opts   watchOptions
 	realCh chan WatchEvent
@@ -2469,15 +2490,46 @@ func (w *Watcher) Generate(t WatchEventType) (err error) {
 
 		switch t {
 		case WATCH_EVENT_TYPE_PRE_UPDATE:
+			pathList := make([]*table.Path, 0)
+			for _, peer := range w.s.neighborMap {
+				pathList = append(pathList, peer.adjRibIn.PathList(peer.configuredRFlist(), false)...)
+			}
+			w.notify(&WatchEventAdjIn{PathList: clonePathList(pathList)})
+		case WATCH_EVENT_TYPE_TABLE:
+			id := table.GLOBAL_RIB_NAME
+			if len(w.opts.tableName) > 0 {
+				peer, ok := w.s.neighborMap[w.opts.tableName]
+				if !ok {
+					err = fmt.Errorf("Neighbor that has %v doesn't exist.", w.opts.tableName)
+					break
+				}
+				if !peer.isRouteServerClient() {
+					err = fmt.Errorf("Neighbor %v doesn't have local rib", w.opts.tableName)
+					return
+				}
+				id = peer.ID()
+			}
+
+			pathList := func() map[string][]*table.Path {
+				pathList := make(map[string][]*table.Path)
+				for _, t := range w.s.globalRib.Tables {
+					for _, dst := range t.GetSortedDestinations() {
+						if paths := dst.GetKnownPathList(id); len(paths) > 0 {
+							pathList[dst.GetNlri().String()] = clonePathList(paths)
+						}
+					}
+				}
+				return pathList
+			}()
+			l := make([]*config.Neighbor, 0, len(w.s.neighborMap))
+			for _, peer := range w.s.neighborMap {
+				l = append(l, peer.ToConfig())
+			}
+			w.notify(&WatchEventTable{PathList: pathList, Neighbor: l})
 		default:
 			err = fmt.Errorf("unsupported type ", t)
 			return
 		}
-		pathList := make([]*table.Path, 0)
-		for _, peer := range w.s.neighborMap {
-			pathList = append(pathList, peer.adjRibIn.PathList(peer.configuredRFlist(), false)...)
-		}
-		w.notify(&WatchEventAdjIn{PathList: clonePathList(pathList)})
 	}
 	return err
 }
