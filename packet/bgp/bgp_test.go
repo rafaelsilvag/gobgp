@@ -516,3 +516,65 @@ func Test_EVPNIPPrefixRoute(t *testing.T) {
 	}
 
 }
+
+func Test_CompareFlowSpecNLRI(t *testing.T) {
+	assert := assert.New(t)
+	cmp, err := ParseFlowSpecComponents(RF_FS_IPv4_UC, "destination 10.0.0.2/32 source 10.0.0.1/32 destination-port =3128 protocol tcp")
+	assert.Nil(err)
+	n1 := &FlowSpecNLRI{Value: cmp, rf: RF_FS_IPv4_UC}
+	cmp, err = ParseFlowSpecComponents(RF_FS_IPv4_UC, "source 10.0.0.0/24 destination-port =3128 protocol tcp")
+	assert.Nil(err)
+	n2 := &FlowSpecNLRI{Value: cmp, rf: RF_FS_IPv4_UC}
+	cmp, err = ParseFlowSpecComponents(RF_FS_IPv4_UC, "source 10.0.0.9/32 port =80 =8080 destination-port >8080&<8080 =3128 source-port >1024 protocol udp tcp")
+	n3 := &FlowSpecNLRI{Value: cmp, rf: RF_FS_IPv4_UC}
+	assert.Nil(err)
+	cmp, err = ParseFlowSpecComponents(RF_FS_IPv4_UC, "destination 192.168.0.2/32")
+	n4 := &FlowSpecNLRI{Value: cmp, rf: RF_FS_IPv4_UC}
+	assert.Nil(err)
+	r, err := CompareFlowSpecNLRI(n1, n2)
+	assert.Nil(err)
+	assert.True(r > 0)
+	r, err = CompareFlowSpecNLRI(n3, n4)
+	assert.Nil(err)
+	assert.True(r < 0)
+}
+
+func Test_NLRIwithIPv4MappedIPv6prefix(t *testing.T) {
+	assert := assert.New(t)
+	n1 := NewIPv6AddrPrefix(120, "::ffff:10.0.0.1")
+	buf1, err := n1.Serialize()
+	assert.Nil(err)
+	n2, err := NewPrefixFromRouteFamily(RouteFamilyToAfiSafi(RF_IPv6_UC))
+	assert.Nil(err)
+	err = n2.DecodeFromBytes(buf1)
+	assert.Nil(err)
+	buf2, _ := n2.Serialize()
+	if reflect.DeepEqual(n1, n2) {
+		t.Log("OK")
+	} else {
+		t.Error("Something wrong")
+		t.Error(len(buf1), n1, buf1)
+		t.Error(len(buf2), n2, buf2)
+		t.Log(bytes.Equal(buf1, buf2))
+	}
+
+	label := NewMPLSLabelStack(2)
+
+	n3 := NewLabeledIPv6AddrPrefix(120, "::ffff:10.0.0.1", *label)
+	buf1, err = n3.Serialize()
+	assert.Nil(err)
+	n4, err := NewPrefixFromRouteFamily(RouteFamilyToAfiSafi(RF_IPv6_MPLS))
+	assert.Nil(err)
+	err = n4.DecodeFromBytes(buf1)
+	assert.Nil(err)
+	buf2, _ = n3.Serialize()
+	t.Log(n3, n4)
+	if reflect.DeepEqual(n3, n4) {
+		t.Log("OK")
+	} else {
+		t.Error("Something wrong")
+		t.Error(len(buf1), n3, buf1)
+		t.Error(len(buf2), n4, buf2)
+		t.Log(bytes.Equal(buf1, buf2))
+	}
+}

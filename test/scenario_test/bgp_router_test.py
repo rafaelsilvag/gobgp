@@ -353,7 +353,7 @@ class GoBGPTestBase(unittest.TestCase):
         e1.add_peer(g1)
         n = e1.peers[g1]['local_addr'].split('/')[0]
         g1.local('gobgp n add {0} as 65000'.format(n))
-        g1.add_peer(e1, reload_config=False) 
+        g1.add_peer(e1, reload_config=False)
 
         g1.wait_for(expected_state=BGP_FSM_ESTABLISHED, peer=e1)
 
@@ -381,18 +381,17 @@ class GoBGPTestBase(unittest.TestCase):
         time.sleep(1)
 
         cnt = 0
-        for pkt in pcap.Reader(open(dumpfile)):
-            last = Packet(pkt[1]).protocols[-1]
-            if type(last) == str:
-                pkt = BGPMessage.parser(last)[0]
-                if type(pkt) == BGPUpdate:
-                    cnt += len(pkt.withdrawn_routes)
+        for _, buf in pcap.Reader(open(dumpfile)):
+            pkt = Packet(buf).get_protocol(BGPMessage)
+            if isinstance(pkt, BGPUpdate):
+                cnt += len(pkt.withdrawn_routes)
 
         self.assertTrue(cnt == 1)
 
     def test_21_check_cli_sorted(self):
         g1 = self.gobgp
         cnt = 0
+
         def next_prefix():
             for i in range(100, 105):
                 for j in range(100, 105):
@@ -414,6 +413,49 @@ class GoBGPTestBase(unittest.TestCase):
                     break
 
         self.assertTrue(cnt == cnt2)
+
+
+    def test_22_check_withdrawal3(self):
+        gobgp_ctn_image_name = parser_option.gobgp_image
+        g1 = self.gobgp
+        g2 = GoBGPContainer(name='g2', asn=65006, router_id='192.168.0.8',
+                            ctn_image_name=gobgp_ctn_image_name,
+                            log_level=parser_option.gobgp_log_level)
+        g3 = GoBGPContainer(name='g3', asn=65007, router_id='192.168.0.9',
+                            ctn_image_name=gobgp_ctn_image_name,
+                            log_level=parser_option.gobgp_log_level)
+
+        initial_wait_time = max(ctn.run() for ctn in [g2, g3])
+        time.sleep(initial_wait_time)
+
+        self.quaggas = {'g2': g2, 'g3': g3}
+
+        g2.local('gobgp global rib add 50.0.0.0/24')
+        g3.local('gobgp global rib add 50.0.0.0/24 med 10')
+
+        g1.add_peer(g2)
+        g2.add_peer(g1)
+        g1.add_peer(g3)
+        g3.add_peer(g1)
+
+        self.test_01_neighbor_established()
+
+        self.test_02_check_gobgp_global_rib()
+
+        paths = g1.get_adj_rib_out(g2, '50.0.0.0/24')
+        self.assertTrue(len(paths) == 0)
+        paths = g1.get_adj_rib_out(g3, '50.0.0.0/24')
+        self.assertTrue(len(paths) == 1)
+        self.assertTrue(paths[0]['source-id'] == '192.168.0.8')
+
+        g2.local('gobgp global rib del 50.0.0.0/24')
+
+        paths = g1.get_adj_rib_out(g2, '50.0.0.0/24')
+        self.assertTrue(len(paths) == 1)
+        self.assertTrue(paths[0]['source-id'] == '192.168.0.9')
+        paths = g1.get_adj_rib_out(g3, '50.0.0.0/24')
+        self.assertTrue(len(paths) == 0)
+
 
 if __name__ == '__main__':
     if os.geteuid() is not 0:

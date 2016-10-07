@@ -41,14 +41,17 @@ type Server struct {
 }
 
 func NewGrpcServer(b *server.BgpServer, hosts string) *Server {
+	return NewServer(b, grpc.NewServer(), hosts)
+}
+
+func NewServer(b *server.BgpServer, g *grpc.Server, hosts string) *Server {
 	grpc.EnableTracing = false
-	grpcServer := grpc.NewServer()
 	server := &Server{
 		bgpServer:  b,
-		grpcServer: grpcServer,
+		grpcServer: g,
 		hosts:      hosts,
 	}
-	RegisterGobgpApiServer(grpcServer, server)
+	RegisterGobgpApiServer(g, server)
 	return server
 }
 
@@ -700,6 +703,7 @@ func (s *Server) EnableZebra(ctx context.Context, arg *EnableZebraRequest) (*Ena
 	return &EnableZebraResponse{}, s.bgpServer.StartZebraClient(&config.ZebraConfig{
 		Url: arg.Url,
 		RedistributeRouteTypeList: l,
+		Version:                   uint8(arg.Version),
 	})
 }
 
@@ -717,6 +721,7 @@ func (s *Server) GetVrf(ctx context.Context, arg *GetVrfRequest) (*GetVrfRespons
 		return &Vrf{
 			Name:     v.Name,
 			Rd:       rd,
+			Id:       v.Id,
 			ImportRt: f(v.ImportRt),
 			ExportRt: f(v.ExportRt),
 		}
@@ -750,7 +755,7 @@ func (s *Server) AddVrf(ctx context.Context, arg *AddVrfRequest) (r *AddVrfRespo
 	if err != nil {
 		return &AddVrfResponse{}, err
 	}
-	return &AddVrfResponse{}, s.bgpServer.AddVrf(arg.Vrf.Name, rd, im, ex)
+	return &AddVrfResponse{}, s.bgpServer.AddVrf(arg.Vrf.Name, arg.Vrf.Id, rd, im, ex)
 }
 
 func (s *Server) DeleteVrf(ctx context.Context, arg *DeleteVrfRequest) (*DeleteVrfResponse, error) {

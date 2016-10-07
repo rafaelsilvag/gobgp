@@ -360,23 +360,25 @@ func filterpath(peer *Peer, path *table.Path, withdrawals []*table.Path) *table.
 	}
 
 	if peer.ID() == path.GetSource().Address.String() {
-		// Say, gobgp was advertising prefix A and peer P also.
-		// When gobgp withdraws prefix A, best path calculation chooses
-		// the path from P as the best path for prefix A.
-		// For peers other than P, this path should be advertised
-		// (as implicit withdrawal). However for P, we should advertise
-		// the local withdraw path.
-
 		// Note: multiple paths having the same prefix could exist the
 		// withdrawals list in the case of Route Server setup with
 		// import policies modifying paths. In such case, gobgp sends
 		// duplicated update messages; withdraw messages for the same
 		// prefix.
-		// However, currently we don't support local path for Route
-		// Server setup so this is NOT the case.
-		for _, w := range withdrawals {
-			if w.IsLocal() && path.GetNlri().String() == w.GetNlri().String() {
-				return w
+		if !peer.isRouteServerClient() {
+			// Say, peer A and B advertized same prefix P, and
+			// best path calculation chose a path from B as best.
+			// When B withdraws prefix P, best path calculation chooses
+			// the path from A as best.
+			// For peers other than A, this path should be advertised
+			// (as implicit withdrawal). However for A, we should advertise
+			// the withdrawal path.
+			// Thing is same when peer A and we advertized prefix P (as local
+			// route), then, we withdraws the prefix.
+			for _, w := range withdrawals {
+				if path.GetNlri().String() == w.GetNlri().String() {
+					return w
+				}
 			}
 		}
 		log.WithFields(log.Fields{
@@ -403,6 +405,25 @@ func clonePathList(pathList []*table.Path) []*table.Path {
 	return l
 }
 
+func (server *BgpServer) notifyBestWatcher(best map[string][]*table.Path, multipath [][]*table.Path) {
+	clonedM := make([][]*table.Path, len(multipath))
+	for i, pathList := range multipath {
+		clonedM[i] = clonePathList(pathList)
+	}
+	clonedB := clonePathList(best[table.GLOBAL_RIB_NAME])
+	for _, p := range clonedB {
+		switch p.GetRouteFamily() {
+		case bgp.RF_IPv4_VPN, bgp.RF_IPv6_VPN:
+			for _, vrf := range server.globalRib.Vrfs {
+				if vrf.Id != 0 && table.CanImportToVrf(vrf, p) {
+					p.VrfIds = append(p.VrfIds, uint16(vrf.Id))
+				}
+			}
+		}
+	}
+	server.notifyWatcher(WATCH_EVENT_TYPE_BEST_PATH, &WatchEventBestPath{PathList: clonedB, MultiPathList: clonedM})
+}
+
 func (server *BgpServer) dropPeerAllRoutes(peer *Peer, families []bgp.RouteFamily) {
 	ids := make([]string, 0, len(server.neighborMap))
 	if peer.isRouteServerClient() {
@@ -417,13 +438,8 @@ func (server *BgpServer) dropPeerAllRoutes(peer *Peer, families []bgp.RouteFamil
 	}
 	for _, rf := range families {
 		best, _, multipath := server.globalRib.DeletePathsByPeer(ids, peer.fsm.peerInfo, rf)
-
 		if !peer.isRouteServerClient() {
-			clonedMpath := make([][]*table.Path, len(multipath))
-			for i, pathList := range multipath {
-				clonedMpath[i] = clonePathList(pathList)
-			}
-			server.notifyWatcher(WATCH_EVENT_TYPE_BEST_PATH, &WatchEventBestPath{PathList: clonePathList(best[table.GLOBAL_RIB_NAME]), MultiPathList: clonedMpath})
+			server.notifyBestWatcher(best, multipath)
 		}
 
 		for _, targetPeer := range server.neighborMap {
@@ -572,12 +588,7 @@ func (server *BgpServer) propagateUpdate(peer *Peer, pathList []*table.Path) []*
 		if len(best[table.GLOBAL_RIB_NAME]) == 0 {
 			return alteredPathList
 		}
-		clonedMpath := make([][]*table.Path, len(multipath))
-		for i, pathList := range multipath {
-			clonedMpath[i] = clonePathList(pathList)
-		}
-		server.notifyWatcher(WATCH_EVENT_TYPE_BEST_PATH, &WatchEventBestPath{PathList: clonePathList(best[table.GLOBAL_RIB_NAME]), MultiPathList: clonedMpath})
-
+		server.notifyBestWatcher(best, multipath)
 	}
 
 	for _, targetPeer := range server.neighborMap {
@@ -889,7 +900,7 @@ func (s *BgpServer) StartZebraClient(c *config.ZebraConfig) (err error) {
 			for _, p := range c.RedistributeRouteTypeList {
 				protos = append(protos, string(p))
 			}
-			s.zclient, err = newZebraClient(s, c.Url, protos)
+			s.zclient, err = newZebraClient(s, c.Url, protos, c.Version)
 		}
 	}
 	return err
@@ -1190,7 +1201,7 @@ func (s *BgpServer) GetVrf() (l []*table.Vrf) {
 	return l
 }
 
-func (s *BgpServer) AddVrf(name string, rd bgp.RouteDistinguisherInterface, im, ex []bgp.ExtendedCommunityInterface) (err error) {
+func (s *BgpServer) AddVrf(name string, id uint32, rd bgp.RouteDistinguisherInterface, im, ex []bgp.ExtendedCommunityInterface) (err error) {
 	ch := make(chan struct{})
 	defer func() { <-ch }()
 
@@ -1205,7 +1216,7 @@ func (s *BgpServer) AddVrf(name string, rd bgp.RouteDistinguisherInterface, im, 
 			AS:      s.bgpConfig.Global.Config.As,
 			LocalID: net.ParseIP(s.bgpConfig.Global.Config.RouterId).To4(),
 		}
-		if pathList, e := s.globalRib.AddVrf(name, rd, im, ex, pi); e != nil {
+		if pathList, e := s.globalRib.AddVrf(name, id, rd, im, ex, pi); e != nil {
 			err = e
 		} else if len(pathList) > 0 {
 			s.propagateUpdate(nil, pathList)
