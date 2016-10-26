@@ -348,6 +348,15 @@ func (path *Path) IsStale() bool {
 	return path.OriginInfo().stale
 }
 
+func (path *Path) IsLLGRStale() bool {
+	for _, c := range path.GetCommunities() {
+		if c == bgp.COMMUNITY_LLGR_STALE {
+			return true
+		}
+	}
+	return false
+}
+
 func (path *Path) GetSourceAs() uint32 {
 	attr := path.getPathAttr(bgp.BGP_ATTR_TYPE_AS_PATH)
 	if attr != nil {
@@ -750,6 +759,28 @@ func (path *Path) SetExtCommunities(exts []bgp.ExtendedCommunityInterface, doRep
 		path.setPathAttr(bgp.NewPathAttributeExtendedCommunities(l))
 	} else {
 		path.setPathAttr(bgp.NewPathAttributeExtendedCommunities(exts))
+	}
+}
+
+func (path *Path) GetLargeCommunities() []*bgp.LargeCommunity {
+	if a := path.getPathAttr(bgp.BGP_ATTR_TYPE_LARGE_COMMUNITY); a != nil {
+		v := a.(*bgp.PathAttributeLargeCommunities).Values
+		ret := make([]*bgp.LargeCommunity, 0, len(v))
+		for _, c := range v {
+			ret = append(ret, c)
+		}
+		return ret
+	}
+	return nil
+}
+
+func (path *Path) SetLargeCommunities(cs []*bgp.LargeCommunity, doReplace bool) {
+	a := path.getPathAttr(bgp.BGP_ATTR_TYPE_LARGE_COMMUNITY)
+	if a == nil || doReplace {
+		path.setPathAttr(bgp.NewPathAttributeLargeCommunities(cs))
+	} else {
+		l := a.(*bgp.PathAttributeLargeCommunities).Values
+		path.setPathAttr(bgp.NewPathAttributeLargeCommunities(append(l, cs...)))
 	}
 }
 

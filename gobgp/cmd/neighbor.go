@@ -243,12 +243,19 @@ func showNeighbor(args []string) error {
 				if len(g.Tuples) > 0 {
 					str += fmt.Sprintf("restart time %d sec", g.Time)
 				}
-				if g.Flags == 0x08 {
+				if g.Flags&0x08 > 0 {
 					if len(str) > 0 {
 						str += ", "
 					}
 					str += "restart flag set"
 				}
+				if g.Flags&0x04 > 0 {
+					if len(str) > 0 {
+						str += ", "
+					}
+					str += "notification flag set"
+				}
+
 				if len(str) > 0 {
 					str += "\n"
 				}
@@ -273,6 +280,32 @@ func showNeighbor(args []string) error {
 					fmt.Printf("        Remote: %s", s)
 				}
 			}
+		case bgp.BGP_CAP_LONG_LIVED_GRACEFUL_RESTART:
+			fmt.Printf("    %s:\t%s\n", c.Code(), support)
+			grStr := func(g *bgp.CapLongLivedGracefulRestart) string {
+				var str string
+				for _, t := range g.Tuples {
+					str += fmt.Sprintf("	    %s, restart time %d sec", bgp.AfiSafiToRouteFamily(t.AFI, t.SAFI), t.RestartTime)
+					if t.Flags == 0x80 {
+						str += ", forward flag set"
+					}
+					str += "\n"
+				}
+				return str
+			}
+			if m := lookup(c, p.Conf.LocalCap); m != nil {
+				g := m.(*bgp.CapLongLivedGracefulRestart)
+				if s := grStr(g); len(s) > 0 {
+					fmt.Printf("        Local:\n%s", s)
+				}
+			}
+			if m := lookup(c, p.Conf.RemoteCap); m != nil {
+				g := m.(*bgp.CapLongLivedGracefulRestart)
+				if s := grStr(g); len(s) > 0 {
+					fmt.Printf("        Remote:\n%s", s)
+				}
+			}
+
 		default:
 			fmt.Printf("    %s:\t%s\n", c.Code(), support)
 		}
@@ -436,6 +469,50 @@ func ShowRoute(pathList []*table.Path, showAge, showBest, showLabel, isMonitor, 
 	for _, pathStr := range pathStrs {
 		fmt.Printf(format, pathStr...)
 	}
+}
+
+func showRibInfo(r, name string) error {
+	var resource api.Resource
+	def := addr2AddressFamily(net.ParseIP(name))
+	switch r {
+	case CMD_GLOBAL:
+		def = bgp.RF_IPv4_UC
+		resource = api.Resource_GLOBAL
+	case CMD_LOCAL:
+		resource = api.Resource_LOCAL
+	case CMD_ADJ_IN:
+		resource = api.Resource_ADJ_IN
+	case CMD_ADJ_OUT:
+		resource = api.Resource_ADJ_OUT
+	default:
+		return fmt.Errorf("invalid resource to show RIB info: %s", r)
+	}
+
+	family, err := checkAddressFamily(def)
+	if err != nil {
+		return err
+	}
+
+	res, err := client.GetRibInfo(context.Background(), &api.GetRibInfoRequest{
+		Info: &api.TableInfo{
+			Type:   resource,
+			Name:   name,
+			Family: uint32(family),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	info := res.Info
+	if globalOpts.Json {
+		j, _ := json.Marshal(info)
+		fmt.Println(string(j))
+		return nil
+	}
+	fmt.Printf("Table %s\n", family)
+	fmt.Printf("Destination: %d, Path: %d\n", info.NumDestination, info.NumPath)
+	return nil
+
 }
 
 func showNeighborRib(r string, name string, args []string) error {
@@ -812,6 +889,18 @@ func NewNeighborCmd() *cobra.Command {
 				},
 			}
 			neighborCmdImpl.AddCommand(c)
+			switch name {
+			case CMD_LOCAL, CMD_ADJ_IN, CMD_ADJ_OUT:
+				n := name
+				c.AddCommand(&cobra.Command{
+					Use: CMD_SUMMARY,
+					Run: func(cmd *cobra.Command, args []string) {
+						if err := showRibInfo(n, args[len(args)-1]); err != nil {
+							exitWithError(err)
+						}
+					},
+				})
+			}
 		}
 	}
 
