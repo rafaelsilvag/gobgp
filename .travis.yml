@@ -67,11 +67,6 @@ matrix:
       services:
         - docker
     - env:
-        - TEST=flow_spec_test.py
-      sudo: required
-      services:
-        - docker
-    - env:
         - TEST=global_policy_test.py
       sudo: required
       services:
@@ -138,6 +133,16 @@ matrix:
         - docker
     - env:
         - TEST=long_lived_graceful_restart_test.py
+      sudo: required
+      services:
+        - docker
+    - env:
+        - TEST=vrf_neighbor_test.py
+      sudo: required
+      services:
+        - docker
+    - env:
+        - TEST=vrf_neighbor_test2.py
       sudo: required
       services:
         - docker

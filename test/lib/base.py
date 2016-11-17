@@ -29,9 +29,9 @@ DEFAULT_TEST_BASE_DIR = '/tmp/gobgp'
 TEST_PREFIX = DEFAULT_TEST_PREFIX
 TEST_BASE_DIR = DEFAULT_TEST_BASE_DIR
 
-BGP_FSM_IDLE = 'BGP_FSM_IDLE'
-BGP_FSM_ACTIVE = 'BGP_FSM_ACTIVE'
-BGP_FSM_ESTABLISHED = 'BGP_FSM_ESTABLISHED'
+BGP_FSM_IDLE = 'idle'
+BGP_FSM_ACTIVE = 'active'
+BGP_FSM_ESTABLISHED = 'established'
 
 BGP_ATTR_TYPE_ORIGIN = 1
 BGP_ATTR_TYPE_AS_PATH = 2
@@ -46,6 +46,19 @@ BGP_ATTR_TYPE_EXTENDED_COMMUNITIES = 16
 
 env.abort_exception = RuntimeError
 output.stderr = False
+
+def wait_for_completion(f, timeout=120):
+    interval = 1
+    count = 0
+    while True:
+        if f():
+            return
+
+        time.sleep(interval)
+        count += interval
+        if count >= timeout:
+            raise Exception('timeout')
+
 
 def try_several_times(f, t=3, s=1):
     e = None
@@ -219,11 +232,11 @@ class Container(object):
         self.ip_addrs.append((intf_name, ip_addr, bridge.name))
         try_several_times(lambda :local(str(c)))
 
-    def local(self, cmd, capture=False, stream=False, detach=False):
+    def local(self, cmd, capture=False, stream=False, detach=False, tty=True):
         if stream:
             dckr = Client(timeout=120, version='auto')
             i = dckr.exec_create(container=self.docker_name(), cmd=cmd)
-            return dckr.exec_start(i['Id'], tty=True, stream=stream, detach=detach)
+            return dckr.exec_start(i['Id'], tty=tty, stream=stream, detach=detach)
         else:
             flag = '-d' if detach else ''
             return local('docker exec {0} {1} {2}'.format(flag, self.docker_name(), cmd), capture)
@@ -280,7 +293,7 @@ class BGPContainer(Container):
                  is_rr_client=False, cluster_id=None,
                  flowspec=False, bridge='', reload_config=True, as2=False,
                  graceful_restart=None, local_as=None, prefix_limit=None,
-                 v6=False, llgr=None):
+                 v6=False, llgr=None, vrf=''):
         neigh_addr = ''
         local_addr = ''
         it = itertools.product(self.ip_addrs, peer.ip_addrs)
@@ -318,7 +331,8 @@ class BGPContainer(Container):
                             'graceful_restart': graceful_restart,
                             'local_as': local_as,
                             'prefix_limit': prefix_limit,
-                            'llgr': llgr}
+                            'llgr': llgr,
+                            'vrf': vrf}
         if self.is_running and reload_config:
             self.create_config()
             self.reload_config()

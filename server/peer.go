@@ -35,7 +35,6 @@ type Peer struct {
 	tableId           string
 	fsm               *FSM
 	adjRibIn          *table.AdjRib
-	adjRibOut         *table.AdjRib
 	outgoing          *channels.InfiniteChannel
 	policy            *table.RoutingPolicy
 	localRib          *table.TableManager
@@ -58,7 +57,6 @@ func NewPeer(g *config.Global, conf *config.Neighbor, loc *table.TableManager, p
 	}
 	rfs, _ := config.AfiSafis(conf.AfiSafis).ToRfList()
 	peer.adjRibIn = table.NewAdjRib(peer.ID(), rfs)
-	peer.adjRibOut = table.NewAdjRib(peer.ID(), rfs)
 	return peer
 }
 
@@ -98,6 +96,29 @@ func (peer *Peer) recvedAllEOR() bool {
 func (peer *Peer) configuredRFlist() []bgp.RouteFamily {
 	rfs, _ := config.AfiSafis(peer.fsm.pConf.AfiSafis).ToRfList()
 	return rfs
+}
+
+func (peer *Peer) toGlobalFamilies(families []bgp.RouteFamily) []bgp.RouteFamily {
+	if peer.fsm.pConf.Config.Vrf != "" {
+		fs := make([]bgp.RouteFamily, 0, len(families))
+		for _, f := range families {
+			switch f {
+			case bgp.RF_IPv4_UC:
+				fs = append(fs, bgp.RF_IPv4_VPN)
+			case bgp.RF_IPv6_UC:
+				fs = append(fs, bgp.RF_IPv6_VPN)
+			default:
+				log.WithFields(log.Fields{
+					"Topic":  "Peer",
+					"Key":    peer.ID(),
+					"Family": f,
+					"VRF":    peer.fsm.pConf.Config.Vrf,
+				}).Warn("invalid family configured for vrfed neighbor")
+			}
+		}
+		families = fs
+	}
+	return families
 }
 
 func classifyFamilies(all, part []bgp.RouteFamily) ([]bgp.RouteFamily, []bgp.RouteFamily) {
@@ -210,14 +231,15 @@ func (peer *Peer) getAccepted(rfList []bgp.RouteFamily) []*table.Path {
 	return peer.adjRibIn.PathList(rfList, true)
 }
 
-func (peer *Peer) filterpath(path *table.Path, withdrawals []*table.Path) *table.Path {
+func (peer *Peer) filterpath(path, old *table.Path) *table.Path {
 	// special handling for RTC nlri
 	// see comments in (*Destination).Calculate()
 	if path != nil && path.GetRouteFamily() == bgp.RF_RTC_UC && !path.IsWithdraw {
-		// if we already sent the same nlri, ignore this
-		if peer.adjRibOut.Exists(path) {
-			return nil
-		}
+
+		// If we already sent the same nlri, send unnecessary
+		// update. Fix this after the API change between table
+		// and server packages.
+
 		dst := peer.localRib.GetDestination(path)
 		path = nil
 		// we send a path even if it is not a best path
@@ -229,7 +251,23 @@ func (peer *Peer) filterpath(path *table.Path, withdrawals []*table.Path) *table
 			}
 		}
 	}
-	if path = filterpath(peer, path, withdrawals); path == nil {
+
+	// only allow vpnv4 and vpnv6 paths to be advertised to VRFed neighbors.
+	// also check we can import this path using table.CanImportToVrf()
+	// if we can, make it local path by calling (*Path).ToLocal()
+	if path != nil && peer.fsm.pConf.Config.Vrf != "" {
+		if f := path.GetRouteFamily(); f != bgp.RF_IPv4_VPN && f != bgp.RF_IPv6_VPN {
+			return nil
+		}
+		vrf := peer.localRib.Vrfs[peer.fsm.pConf.Config.Vrf]
+		if table.CanImportToVrf(vrf, path) {
+			path = path.ToLocal()
+		} else {
+			return nil
+		}
+	}
+
+	if path = filterpath(peer, path, old); path == nil {
 		return nil
 	}
 
@@ -250,11 +288,9 @@ func (peer *Peer) filterpath(path *table.Path, withdrawals []*table.Path) *table
 	// Procedure section (Section 4.7).  Note that this requirement
 	// implies that such routes should be withdrawn from any such neighbor.
 	if path != nil && !path.IsWithdraw && !peer.isLLGREnabledFamily(path.GetRouteFamily()) && path.IsLLGRStale() {
-		if peer.adjRibOut.Exists(path) {
-			path = path.Clone(true)
-		} else {
-			return nil
-		}
+		// we send unnecessary withdrawn even if we didn't
+		// sent the route.
+		path = path.Clone(true)
 	}
 
 	// remove local-pref attribute
@@ -269,7 +305,7 @@ func (peer *Peer) filterpath(path *table.Path, withdrawals []*table.Path) *table
 func (peer *Peer) getBestFromLocal(rfList []bgp.RouteFamily) ([]*table.Path, []*table.Path) {
 	pathList := []*table.Path{}
 	filtered := []*table.Path{}
-	for _, path := range peer.localRib.GetBestPathList(peer.TableID(), rfList) {
+	for _, path := range peer.localRib.GetBestPathList(peer.TableID(), peer.toGlobalFamilies(rfList)) {
 		if p := peer.filterpath(path, nil); p != nil {
 			pathList = append(pathList, p)
 		} else {
@@ -285,7 +321,7 @@ func (peer *Peer) getBestFromLocal(rfList []bgp.RouteFamily) ([]*table.Path, []*
 	return pathList, filtered
 }
 
-func (peer *Peer) processOutgoingPaths(paths, withdrawals []*table.Path) []*table.Path {
+func (peer *Peer) processOutgoingPaths(paths, olds []*table.Path) []*table.Path {
 	if peer.fsm.state != bgp.BGP_FSM_ESTABLISHED {
 		return nil
 	}
@@ -299,13 +335,15 @@ func (peer *Peer) processOutgoingPaths(paths, withdrawals []*table.Path) []*tabl
 
 	outgoing := make([]*table.Path, 0, len(paths))
 
-	for _, path := range paths {
-		if p := peer.filterpath(path, withdrawals); p != nil {
+	for idx, path := range paths {
+		var old *table.Path
+		if olds != nil {
+			old = olds[idx]
+		}
+		if p := peer.filterpath(path, old); p != nil {
 			outgoing = append(outgoing, p)
 		}
 	}
-
-	peer.adjRibOut.Update(outgoing)
 	return outgoing
 }
 
@@ -329,9 +367,7 @@ func (peer *Peer) handleRouteRefresh(e *FsmMsg) []*table.Path {
 		return nil
 	}
 	rfList := []bgp.RouteFamily{rf}
-	peer.adjRibOut.Drop(rfList)
 	accepted, filtered := peer.getBestFromLocal(rfList)
-	peer.adjRibOut.Update(accepted)
 	for _, path := range filtered {
 		path.IsWithdraw = true
 		accepted = append(accepted, path)
@@ -475,43 +511,38 @@ func (peer *Peer) ToConfig() *config.Neighbor {
 		conf.AfiSafis[i] = peer.fsm.pConf.AfiSafis[i]
 	}
 
-	remoteCap := make([][]byte, 0, len(peer.fsm.capMap))
+	remoteCap := make([]bgp.ParameterCapabilityInterface, 0, len(peer.fsm.capMap))
 	for _, c := range peer.fsm.capMap {
 		for _, m := range c {
+			// need to copy all values here
 			buf, _ := m.Serialize()
-			remoteCap = append(remoteCap, buf)
+			cap, _ := bgp.DecodeCapability(buf)
+			remoteCap = append(remoteCap, cap)
 		}
 	}
-	conf.State.Capabilities.RemoteList = remoteCap
-
-	caps := capabilitiesFromConfig(peer.fsm.pConf)
-	localCap := make([][]byte, 0, len(caps))
-	for _, c := range caps {
-		buf, _ := c.Serialize()
-		localCap = append(localCap, buf)
-	}
-	conf.State.Capabilities.LocalList = localCap
+	conf.State.RemoteCapabilityList = remoteCap
+	conf.State.LocalCapabilityList = capabilitiesFromConfig(peer.fsm.pConf)
 
 	conf.State.RemoteRouterId = peer.fsm.peerInfo.ID.To4().String()
 	conf.State.SessionState = config.IntToSessionStateMap[int(peer.fsm.state)]
-	conf.State.AdminState = peer.fsm.adminState.String()
+	conf.State.AdminState = config.IntToAdminStateMap[int(peer.fsm.adminState)]
 
 	if peer.fsm.state == bgp.BGP_FSM_ESTABLISHED {
 		rfList := peer.configuredRFlist()
-		conf.State.AdjTable.Advertised = uint32(peer.adjRibOut.Count(rfList))
+		pathList, _ := peer.getBestFromLocal(rfList)
+		conf.State.AdjTable.Advertised = uint32(len(pathList))
 		conf.State.AdjTable.Received = uint32(peer.adjRibIn.Count(rfList))
 		conf.State.AdjTable.Accepted = uint32(peer.adjRibIn.Accepted(rfList))
 
 		conf.Transport.State.LocalAddress, conf.Transport.State.LocalPort = peer.fsm.LocalHostPort()
 		_, conf.Transport.State.RemotePort = peer.fsm.RemoteHostPort()
-
-		conf.State.ReceivedOpenMessage, _ = peer.fsm.recvOpen.Serialize()
-
+		buf, _ := peer.fsm.recvOpen.Serialize()
+		// need to copy all values here
+		conf.State.ReceivedOpenMessage, _ = bgp.ParseBGPMessage(buf)
 	}
 	return &conf
 }
 
 func (peer *Peer) DropAll(rfList []bgp.RouteFamily) {
 	peer.adjRibIn.Drop(rfList)
-	peer.adjRibOut.Drop(rfList)
 }

@@ -39,7 +39,8 @@ class GoBGPTestBase(unittest.TestCase):
                             ctn_image_name=gobgp_ctn_image_name,
                             log_level=parser_option.gobgp_log_level)
 
-        g2 = GoBGPContainer(name='g2', asn=65001, router_id='192.168.0.2')
+        g2 = GoBGPContainer(name='g2', asn=65001, router_id='192.168.0.2',
+                            ctn_image_name=gobgp_ctn_image_name)
         e1 = ExaBGPContainer(name='e1', asn=65002, router_id='192.168.0.3')
         ctns = [g1, g2, e1]
 
@@ -84,7 +85,7 @@ class GoBGPTestBase(unittest.TestCase):
     def test_04_withdraw_path(self):
         self.clients['g2'].local('gobgp global rib del 10.0.0.0/24')
         time.sleep(1)
-        info = self.gobgp.get_neighbor(self.clients['g2'])['info']
+        info = self.gobgp.get_neighbor(self.clients['g2'])['state']['adj-table']
         self.assertTrue(info['advertised'] == 1)
         self.assertTrue('accepted' not in info) # means info['accepted'] == 0
         self.assertTrue('received' not in info) # means info['received'] == 0
