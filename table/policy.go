@@ -56,6 +56,18 @@ const (
 	ROUTE_TYPE_REJECT
 )
 
+func (t RouteType) String() string {
+	switch t {
+	case ROUTE_TYPE_NONE:
+		return "continue"
+	case ROUTE_TYPE_ACCEPT:
+		return "accept"
+	case ROUTE_TYPE_REJECT:
+		return "reject"
+	}
+	return fmt.Sprintf("unknown(%d)", t)
+}
+
 type PolicyDirection int
 
 const (
@@ -1633,7 +1645,7 @@ func (c *RpkiValidationCondition) String() string {
 }
 
 func NewRpkiValidationCondition(c config.RpkiValidationResultType) (*RpkiValidationCondition, error) {
-	if c == config.RPKI_VALIDATION_RESULT_TYPE_NONE {
+	if c == config.RpkiValidationResultType("") || c == config.RPKI_VALIDATION_RESULT_TYPE_NONE {
 		return nil, nil
 	}
 	return &RpkiValidationCondition{
@@ -1713,14 +1725,16 @@ func (a *RoutingAction) String() string {
 }
 
 func NewRoutingAction(c config.RouteDisposition) (*RoutingAction, error) {
-	if c.AcceptRoute == c.RejectRoute && c.AcceptRoute {
-		return nil, fmt.Errorf("invalid route disposition")
-	} else if !c.AcceptRoute && !c.RejectRoute {
+	var accept bool
+	switch c {
+	case config.RouteDisposition(""), config.ROUTE_DISPOSITION_NONE:
 		return nil, nil
-	}
-	accept := false
-	if c.AcceptRoute && !c.RejectRoute {
+	case config.ROUTE_DISPOSITION_ACCEPT_ROUTE:
 		accept = true
+	case config.ROUTE_DISPOSITION_REJECT_ROUTE:
+		accept = false
+	default:
+		return nil, fmt.Errorf("invalid route disposition")
 	}
 	return &RoutingAction{
 		AcceptRoute: accept,
@@ -2329,11 +2343,6 @@ func (s *Statement) Apply(path *Path, options *PolicyOptions) (RouteType, *Path)
 		}
 		//Routing action
 		if s.RouteAction == nil || reflect.ValueOf(s.RouteAction).IsNil() {
-			log.WithFields(log.Fields{
-				"Topic":      "Policy",
-				"Path":       path,
-				"PolicyName": s.Name,
-			}).Warn("route action is nil")
 			return ROUTE_TYPE_NONE, path
 		}
 		p := s.RouteAction.Apply(path, options)
@@ -2387,7 +2396,13 @@ func (s *Statement) ToConfig() *config.Statement {
 			act := config.Actions{}
 			if s.RouteAction != nil && !reflect.ValueOf(s.RouteAction).IsNil() {
 				a := s.RouteAction.(*RoutingAction)
-				act.RouteDisposition = config.RouteDisposition{AcceptRoute: a.AcceptRoute, RejectRoute: !a.AcceptRoute}
+				if a.AcceptRoute {
+					act.RouteDisposition = config.ROUTE_DISPOSITION_ACCEPT_ROUTE
+				} else {
+					act.RouteDisposition = config.ROUTE_DISPOSITION_REJECT_ROUTE
+				}
+			} else {
+				act.RouteDisposition = config.ROUTE_DISPOSITION_NONE
 			}
 			for _, a := range s.ModActions {
 				switch a.(type) {
@@ -2774,7 +2789,7 @@ func (r *RoutingPolicy) ApplyPolicy(id string, dir PolicyDirection, before *Path
 	result := ROUTE_TYPE_NONE
 	after := before
 	for _, p := range r.getPolicy(id, dir) {
-		result, after = p.Apply(before, options)
+		result, after = p.Apply(after, options)
 		if result != ROUTE_TYPE_NONE {
 			break
 		}

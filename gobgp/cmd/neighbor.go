@@ -102,8 +102,8 @@ func showNeighbors(vrf string) error {
 	}
 	var format string
 	format = "%-" + fmt.Sprint(maxaddrlen) + "s" + " %" + fmt.Sprint(maxaslen) + "s" + " %" + fmt.Sprint(maxtimelen) + "s"
-	format += " %-11s |%11s %8s %8s\n"
-	fmt.Printf(format, "Peer", "AS", "Up/Down", "State", "#Advertised", "Received", "Accepted")
+	format += " %-11s |%9s %9s\n"
+	fmt.Printf(format, "Peer", "AS", "Up/Down", "State", "#Received", "Accepted")
 	format_fsm := func(admin config.AdminState, fsm config.SessionState) string {
 		switch admin {
 		case config.ADMIN_STATE_DOWN:
@@ -135,7 +135,7 @@ func showNeighbors(vrf string) error {
 		if n.Config.NeighborInterface != "" {
 			neigh = n.Config.NeighborInterface
 		}
-		fmt.Printf(format, neigh, fmt.Sprint(n.Config.PeerAs), timedelta[i], format_fsm(n.State.AdminState, n.State.SessionState), fmt.Sprint(n.State.AdjTable.Advertised), fmt.Sprint(n.State.AdjTable.Received), fmt.Sprint(n.State.AdjTable.Accepted))
+		fmt.Printf(format, neigh, fmt.Sprint(n.Config.PeerAs), timedelta[i], format_fsm(n.State.AdminState, n.State.SessionState), fmt.Sprint(n.State.AdjTable.Received), fmt.Sprint(n.State.AdjTable.Accepted))
 	}
 
 	return nil
@@ -169,8 +169,8 @@ func showNeighbor(args []string) error {
 	fmt.Printf("  BGP version 4, remote router ID %s\n", id)
 	fmt.Printf("  BGP state = %s, up for %s\n", p.State.SessionState, formatTimedelta(int64(p.Timers.State.Uptime)-time.Now().Unix()))
 	fmt.Printf("  BGP OutQ = %d, Flops = %d\n", p.State.Queues.Output, p.State.Flops)
-	fmt.Printf("  Hold time is %d, keepalive interval is %d seconds\n", p.Timers.State.NegotiatedHoldTime, p.Timers.State.KeepaliveInterval)
-	fmt.Printf("  Configured hold time is %d, keepalive interval is %d seconds\n", p.Timers.Config.HoldTime, p.Timers.Config.KeepaliveInterval)
+	fmt.Printf("  Hold time is %d, keepalive interval is %d seconds\n", int(p.Timers.State.NegotiatedHoldTime), int(p.Timers.State.KeepaliveInterval))
+	fmt.Printf("  Configured hold time is %d, keepalive interval is %d seconds\n", int(p.Timers.Config.HoldTime), int(p.Timers.Config.KeepaliveInterval))
 
 	fmt.Printf("  Neighbor capabilities:\n")
 	caps := capabilities{}
@@ -655,7 +655,7 @@ func showNeighborPolicy(remoteIP, policyType string, indent int) error {
 	case "export":
 		assignment, err = client.GetRouteServerExportPolicy(remoteIP)
 	default:
-		fmt.Errorf("invalid policy type: choose from (in|import|export)")
+		return fmt.Errorf("invalid policy type: choose from (in|import|export)")
 	}
 
 	if err != nil {
@@ -669,7 +669,7 @@ func showNeighborPolicy(remoteIP, policyType string, indent int) error {
 	}
 
 	fmt.Printf("%s policy:\n", strings.Title(policyType))
-	fmt.Printf("%sDefault: %s\n", strings.Repeat(" ", indent), assignment.Default)
+	fmt.Printf("%sDefault: %s\n", strings.Repeat(" ", indent), assignment.Default.String())
 	for _, p := range assignment.Policies {
 		fmt.Printf("%sName %s:\n", strings.Repeat(" ", indent), p.Name)
 		printPolicy(indent+4, p)

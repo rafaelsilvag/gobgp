@@ -333,7 +333,7 @@ func printStatement(indent int, s *table.Statement) {
 		case *table.LargeCommunityCondition:
 			fmt.Printf("%sLargeCommunitySet: %s %s\n", ind, t.Option(), t.Name())
 		case *table.AsPathLengthCondition:
-			fmt.Printf("%sAsPathLength: %s %d\n", ind, t.String())
+			fmt.Printf("%sAsPathLength: %s\n", ind, t.String())
 		case *table.RpkiValidationCondition:
 			fmt.Printf("%sRPKI result: %s\n", ind, t.String())
 		case *table.RouteTypeCondition:
@@ -669,9 +669,9 @@ func modAction(name, op string, args []string) error {
 	args = args[1:]
 	switch typ {
 	case "reject":
-		stmt.Actions.RouteDisposition = config.RouteDisposition{RejectRoute: true}
+		stmt.Actions.RouteDisposition = config.ROUTE_DISPOSITION_REJECT_ROUTE
 	case "accept":
-		stmt.Actions.RouteDisposition = config.RouteDisposition{AcceptRoute: true}
+		stmt.Actions.RouteDisposition = config.ROUTE_DISPOSITION_ACCEPT_ROUTE
 	case "community":
 		if len(args) < 1 {
 			return fmt.Errorf("%s community { add | remove | replace } <value>...", usage)
@@ -719,7 +719,7 @@ func modAction(name, op string, args []string) error {
 		}
 	case "med":
 		if len(args) < 2 {
-			return fmt.Errorf("%s med { add | sub | set } <value>")
+			return fmt.Errorf("%s med { add | sub | set } <value>", usage)
 		}
 		med, err := strconv.Atoi(args[1])
 		if err != nil {
@@ -733,7 +733,7 @@ func modAction(name, op string, args []string) error {
 		case "set":
 			stmt.Actions.BgpActions.SetMed = config.BgpSetMedType(fmt.Sprintf("%d", med))
 		default:
-			return fmt.Errorf("%s med { add | sub | set } <value>")
+			return fmt.Errorf("%s med { add | sub | set } <value>", usage)
 		}
 	case "local-pref":
 		if len(args) < 1 {

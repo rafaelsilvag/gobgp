@@ -89,6 +89,12 @@ func (s *Server) Serve() error {
 }
 
 func NewPeerFromConfigStruct(pconf *config.Neighbor) *Peer {
+	var families []uint32
+	for _, f := range pconf.AfiSafis {
+		if family, ok := bgp.AddressFamilyValueMap[string(f.Config.AfiSafiName)]; ok {
+			families = append(families, uint32(family))
+		}
+	}
 	prefixLimits := make([]*PrefixLimit, 0, len(pconf.AfiSafis))
 	for _, family := range pconf.AfiSafis {
 		if c := family.PrefixLimit.Config; c.MaxPrefixes > 0 {
@@ -117,6 +123,7 @@ func NewPeerFromConfigStruct(pconf *config.Neighbor) *Peer {
 		localCap = append(localCap, c)
 	}
 	return &Peer{
+		Families: families,
 		Conf: &PeerConf{
 			NeighborAddress:   pconf.Config.NeighborAddress,
 			Id:                s.RemoteRouterId,
@@ -183,12 +190,16 @@ func NewPeerFromConfigStruct(pconf *config.Neighbor) *Peer {
 		RouteServer: &RouteServer{
 			RouteServerClient: pconf.RouteServer.Config.RouteServerClient,
 		},
+		Transport: &Transport{
+			RemotePort:   uint32(pconf.Transport.Config.RemotePort),
+			LocalAddress: pconf.Transport.Config.LocalAddress,
+		},
 	}
 }
 
 func (s *Server) GetNeighbor(ctx context.Context, arg *GetNeighborRequest) (*GetNeighborResponse, error) {
 	p := []*Peer{}
-	for _, e := range s.bgpServer.GetNeighbor() {
+	for _, e := range s.bgpServer.GetNeighbor(arg.EnableAdvertised) {
 		p = append(p, NewPeerFromConfigStruct(e))
 	}
 	return &GetNeighborResponse{Peers: p}, nil
@@ -883,23 +894,10 @@ func NewNeighborFromAPIStruct(a *Peer) (*config.Neighbor, error) {
 			}
 		}
 	}
-	if a.Families != nil {
-		for _, family := range a.Families {
-			name, ok := bgp.AddressFamilyNameMap[bgp.RouteFamily(family)]
-			if !ok {
-				return pconf, fmt.Errorf("invalid address family: %d", family)
-			}
-			cAfiSafi := config.AfiSafi{
-				Config: config.AfiSafiConfig{
-					AfiSafiName: config.AfiSafiType(name),
-				},
-			}
-			pconf.AfiSafis = append(pconf.AfiSafis, cAfiSafi)
-		}
-	}
 	if a.Transport != nil {
 		pconf.Transport.Config.LocalAddress = a.Transport.LocalAddress
 		pconf.Transport.Config.PassiveMode = a.Transport.PassiveMode
+		pconf.Transport.Config.RemotePort = uint16(a.Transport.RemotePort)
 	}
 	if a.EbgpMultihop != nil {
 		pconf.EbgpMultihop.Config.Enabled = a.EbgpMultihop.Enabled
@@ -1230,9 +1228,10 @@ func toStatementApi(s *config.Statement) *Statement {
 	cs.RpkiResult = int32(s.Conditions.BgpConditions.RpkiValidationResult.ToInt())
 	as := &Actions{
 		RouteAction: func() RouteAction {
-			if s.Actions.RouteDisposition.AcceptRoute {
+			switch s.Actions.RouteDisposition {
+			case config.ROUTE_DISPOSITION_ACCEPT_ROUTE:
 				return RouteAction_ACCEPT
-			} else if s.Actions.RouteDisposition.RejectRoute {
+			case config.ROUTE_DISPOSITION_REJECT_ROUTE:
 				return RouteAction_REJECT
 			}
 			return RouteAction_NONE

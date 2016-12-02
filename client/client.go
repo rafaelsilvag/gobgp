@@ -97,7 +97,7 @@ func (cli *GoBGPClient) GetServer() (*config.Global, error) {
 }
 
 func (cli *GoBGPClient) getNeighbor(name string, afi int, vrf string) ([]*config.Neighbor, error) {
-	ret, err := cli.cli.GetNeighbor(context.Background(), &api.GetNeighborRequest{})
+	ret, err := cli.cli.GetNeighbor(context.Background(), &api.GetNeighborRequest{EnableAdvertised: name != ""})
 	if err != nil {
 		return nil, err
 	}
@@ -143,18 +143,21 @@ func (cli *GoBGPClient) GetNeighbor(name string) (*config.Neighbor, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(ns) == 0 {
+		return nil, fmt.Errorf("not found neighbor %s", name)
+	}
 	return ns[0], nil
 }
 
 func (cli *GoBGPClient) AddNeighbor(c *config.Neighbor) error {
 	peer := api.NewPeerFromConfigStruct(c)
-	_, err := cli.cli.AddNeighbor(context.Background(), &api.AddNeighborRequest{peer})
+	_, err := cli.cli.AddNeighbor(context.Background(), &api.AddNeighborRequest{Peer: peer})
 	return err
 }
 
 func (cli *GoBGPClient) DeleteNeighbor(c *config.Neighbor) error {
 	peer := api.NewPeerFromConfigStruct(c)
-	_, err := cli.cli.DeleteNeighbor(context.Background(), &api.DeleteNeighborRequest{peer})
+	_, err := cli.cli.DeleteNeighbor(context.Background(), &api.DeleteNeighborRequest{Peer: peer})
 	return err
 }
 
@@ -162,22 +165,22 @@ func (cli *GoBGPClient) DeleteNeighbor(c *config.Neighbor) error {
 //}
 
 func (cli *GoBGPClient) ShutdownNeighbor(addr string) error {
-	_, err := cli.cli.ShutdownNeighbor(context.Background(), &api.ShutdownNeighborRequest{addr})
+	_, err := cli.cli.ShutdownNeighbor(context.Background(), &api.ShutdownNeighborRequest{Address: addr})
 	return err
 }
 
 func (cli *GoBGPClient) ResetNeighbor(addr string) error {
-	_, err := cli.cli.ResetNeighbor(context.Background(), &api.ResetNeighborRequest{addr})
+	_, err := cli.cli.ResetNeighbor(context.Background(), &api.ResetNeighborRequest{Address: addr})
 	return err
 }
 
 func (cli *GoBGPClient) EnableNeighbor(addr string) error {
-	_, err := cli.cli.EnableNeighbor(context.Background(), &api.EnableNeighborRequest{addr})
+	_, err := cli.cli.EnableNeighbor(context.Background(), &api.EnableNeighborRequest{Address: addr})
 	return err
 }
 
 func (cli *GoBGPClient) DisableNeighbor(addr string) error {
-	_, err := cli.cli.DisableNeighbor(context.Background(), &api.DisableNeighborRequest{addr})
+	_, err := cli.cli.DisableNeighbor(context.Background(), &api.DisableNeighborRequest{Address: addr})
 	return err
 }
 
@@ -702,20 +705,22 @@ func (cli *GoBGPClient) GetRouteServerExportPolicy(name string) (*table.PolicyAs
 
 func (cli *GoBGPClient) AddPolicyAssignment(assignment *table.PolicyAssignment) error {
 	_, err := cli.cli.AddPolicyAssignment(context.Background(), &api.AddPolicyAssignmentRequest{
-		api.NewAPIPolicyAssignmentFromTableStruct(assignment),
+		Assignment: api.NewAPIPolicyAssignmentFromTableStruct(assignment),
 	})
 	return err
 }
 
 func (cli *GoBGPClient) DeletePolicyAssignment(assignment *table.PolicyAssignment, all bool) error {
 	a := api.NewAPIPolicyAssignmentFromTableStruct(assignment)
-	_, err := cli.cli.DeletePolicyAssignment(context.Background(), &api.DeletePolicyAssignmentRequest{a, all})
+	_, err := cli.cli.DeletePolicyAssignment(context.Background(), &api.DeletePolicyAssignmentRequest{
+		Assignment: a,
+		All:        all})
 	return err
 }
 
 func (cli *GoBGPClient) ReplacePolicyAssignment(assignment *table.PolicyAssignment) error {
 	_, err := cli.cli.ReplacePolicyAssignment(context.Background(), &api.ReplacePolicyAssignmentRequest{
-		api.NewAPIPolicyAssignmentFromTableStruct(assignment),
+		Assignment: api.NewAPIPolicyAssignmentFromTableStruct(assignment),
 	})
 	return err
 }

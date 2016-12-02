@@ -2728,11 +2728,12 @@ func createStatement(name, psname, nsname string, accept bool) config.Statement 
 			NeighborSet: nsname,
 		},
 	}
+	rd := config.ROUTE_DISPOSITION_REJECT_ROUTE
+	if accept {
+		rd = config.ROUTE_DISPOSITION_ACCEPT_ROUTE
+	}
 	a := config.Actions{
-		RouteDisposition: config.RouteDisposition{
-			AcceptRoute: accept,
-			RejectRoute: !accept,
-		},
+		RouteDisposition: rd,
 	}
 	s := config.Statement{
 		Name:       name,
@@ -2862,8 +2863,8 @@ func TestPrefixSetMatch(t *testing.T) {
 
 func TestLargeCommunityMatchAction(t *testing.T) {
 	coms := []*bgp.LargeCommunity{
-		&bgp.LargeCommunity{100, 100, 100},
-		&bgp.LargeCommunity{100, 200, 200},
+		&bgp.LargeCommunity{ASN: 100, LocalData1: 100, LocalData2: 100},
+		&bgp.LargeCommunity{ASN: 100, LocalData1: 200, LocalData2: 200},
 	}
 	p := NewPath(nil, nil, false, []bgp.PathAttributeInterface{bgp.NewPathAttributeLargeCommunities(coms)}, time.Time{}, false)
 
@@ -2887,10 +2888,10 @@ func TestLargeCommunityMatchAction(t *testing.T) {
 	assert.Equal(t, m.Evaluate(p, nil), true)
 
 	a, err := NewLargeCommunityAction(config.SetLargeCommunity{
-		config.SetLargeCommunityMethod{
-			[]string{"100:100:100"},
+		SetLargeCommunityMethod: config.SetLargeCommunityMethod{
+			CommunitiesList: []string{"100:100:100"},
 		},
-		config.BGP_SET_COMMUNITY_OPTION_TYPE_REMOVE,
+		Options: config.BGP_SET_COMMUNITY_OPTION_TYPE_REMOVE,
 	})
 	assert.Equal(t, err, nil)
 	p = a.Apply(p, nil)
@@ -2898,13 +2899,13 @@ func TestLargeCommunityMatchAction(t *testing.T) {
 	assert.Equal(t, m.Evaluate(p, nil), false)
 
 	a, err = NewLargeCommunityAction(config.SetLargeCommunity{
-		config.SetLargeCommunityMethod{
-			[]string{
+		SetLargeCommunityMethod: config.SetLargeCommunityMethod{
+			CommunitiesList: []string{
 				"100:300:100",
 				"200:100:100",
 			},
 		},
-		config.BGP_SET_COMMUNITY_OPTION_TYPE_ADD,
+		Options: config.BGP_SET_COMMUNITY_OPTION_TYPE_ADD,
 	})
 	assert.Equal(t, err, nil)
 	p = a.Apply(p, nil)
@@ -2912,10 +2913,10 @@ func TestLargeCommunityMatchAction(t *testing.T) {
 	assert.Equal(t, m.Evaluate(p, nil), true)
 
 	a, err = NewLargeCommunityAction(config.SetLargeCommunity{
-		config.SetLargeCommunityMethod{
-			[]string{"^100:"},
+		SetLargeCommunityMethod: config.SetLargeCommunityMethod{
+			CommunitiesList: []string{"^100:"},
 		},
-		config.BGP_SET_COMMUNITY_OPTION_TYPE_REMOVE,
+		Options: config.BGP_SET_COMMUNITY_OPTION_TYPE_REMOVE,
 	})
 	assert.Equal(t, err, nil)
 	p = a.Apply(p, nil)
@@ -2939,4 +2940,49 @@ func TestLargeCommunityMatchAction(t *testing.T) {
 	m.set = set
 
 	assert.Equal(t, m.Evaluate(p, nil), true)
+}
+
+func TestMultipleStatementPolicy(t *testing.T) {
+	r := NewRoutingPolicy()
+	rp := config.RoutingPolicy{
+		PolicyDefinitions: []config.PolicyDefinition{config.PolicyDefinition{
+			Name: "p1",
+			Statements: []config.Statement{
+				config.Statement{
+					Actions: config.Actions{
+						BgpActions: config.BgpActions{
+							SetMed: "+100",
+						},
+					},
+				},
+				config.Statement{
+					Actions: config.Actions{
+						BgpActions: config.BgpActions{
+							SetLocalPref: 100,
+						},
+					},
+				},
+			},
+		},
+		},
+	}
+	err := r.reload(rp)
+	assert.Nil(t, err)
+
+	nlri := bgp.NewIPAddrPrefix(24, "10.10.0.0")
+
+	origin := bgp.NewPathAttributeOrigin(0)
+	aspathParam := []bgp.AsPathParamInterface{bgp.NewAsPathParam(2, []uint16{65001})}
+	aspath := bgp.NewPathAttributeAsPath(aspathParam)
+	nexthop := bgp.NewPathAttributeNextHop("10.0.0.1")
+	pattrs := []bgp.PathAttributeInterface{origin, aspath, nexthop}
+
+	path := NewPath(nil, nlri, false, pattrs, time.Now(), false)
+
+	pType, newPath := r.policyMap["p1"].Apply(path, nil)
+	assert.Equal(t, ROUTE_TYPE_NONE, pType)
+	med, _ := newPath.GetMed()
+	assert.Equal(t, med, uint32(100))
+	localPref, _ := newPath.GetLocalPref()
+	assert.Equal(t, localPref, uint32(100))
 }

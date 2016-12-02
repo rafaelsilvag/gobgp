@@ -703,7 +703,7 @@ func (server *BgpServer) handleFSMMessage(peer *Peer, e *FsmMsg) {
 			}
 		}
 
-		peer.outgoing.Close()
+		cleanInfiniteChannel(peer.outgoing)
 		peer.outgoing = channels.NewInfiniteChannel()
 		if nextState == bgp.BGP_FSM_ESTABLISHED {
 			// update for export policy
@@ -1618,7 +1618,7 @@ func (s *BgpServer) GetServer() (c *config.Global) {
 	return c
 }
 
-func (s *BgpServer) GetNeighbor() (l []*config.Neighbor) {
+func (s *BgpServer) GetNeighbor(getAdvertised bool) (l []*config.Neighbor) {
 	ch := make(chan struct{})
 	defer func() { <-ch }()
 
@@ -1627,7 +1627,7 @@ func (s *BgpServer) GetNeighbor() (l []*config.Neighbor) {
 
 		l = make([]*config.Neighbor, 0, len(s.neighborMap))
 		for _, peer := range s.neighborMap {
-			l = append(l, peer.ToConfig())
+			l = append(l, peer.ToConfig(getAdvertised))
 		}
 	}
 	return l
@@ -1740,6 +1740,7 @@ func (server *BgpServer) deleteNeighbor(c *config.Neighbor, code, subcode uint8)
 
 	n.fsm.sendNotification(code, subcode, nil, "")
 	n.stopPeerRestarting()
+	cleanInfiniteChannel(n.outgoing)
 
 	go func(addr string) {
 		t1 := time.AfterFunc(time.Minute*5, func() {
@@ -2511,11 +2512,11 @@ func (w *Watcher) Generate(t WatchEventType) (err error) {
 			}()
 			l := make([]*config.Neighbor, 0, len(w.s.neighborMap))
 			for _, peer := range w.s.neighborMap {
-				l = append(l, peer.ToConfig())
+				l = append(l, peer.ToConfig(false))
 			}
 			w.notify(&WatchEventTable{PathList: pathList, Neighbor: l})
 		default:
-			err = fmt.Errorf("unsupported type ", t)
+			err = fmt.Errorf("unsupported type %v", t)
 			return
 		}
 	}
@@ -2553,17 +2554,11 @@ func (w *Watcher) Stop() {
 			}
 		}
 
-		w.ch.Close()
-		// make sure the loop function finishes
-		func() {
-			for {
-				select {
-				case <-w.realCh:
-				default:
-					return
-				}
-			}
-		}()
+		cleanInfiniteChannel(w.ch)
+		// the loop function goroutine might be blocked for
+		// writing to realCh. make sure it finishes.
+		for range w.realCh {
+		}
 	}
 }
 
