@@ -542,7 +542,11 @@ func (server *BgpServer) propagateUpdate(peer *Peer, pathList []*table.Path) []*
 		best, old, _ = rib.ProcessPaths(ids, append(pathList, moded...))
 	} else {
 		for idx, path := range pathList {
-			path = server.policy.ApplyPolicy(table.GLOBAL_RIB_NAME, table.POLICY_DIRECTION_IMPORT, path, nil)
+			if p := server.policy.ApplyPolicy(table.GLOBAL_RIB_NAME, table.POLICY_DIRECTION_IMPORT, path, nil); p != nil {
+				path = p
+			} else {
+				path = path.Clone(true)
+			}
 			pathList[idx] = path
 			// RFC4684 Constrained Route Distribution 6. Operation
 			//
@@ -1740,25 +1744,41 @@ func (server *BgpServer) deleteNeighbor(c *config.Neighbor, code, subcode uint8)
 
 	n.fsm.sendNotification(code, subcode, nil, "")
 	n.stopPeerRestarting()
-	cleanInfiniteChannel(n.outgoing)
 
 	go func(addr string) {
+		failed := false
 		t1 := time.AfterFunc(time.Minute*5, func() {
 			log.WithFields(log.Fields{
 				"Topic": "Peer",
 			}).Warnf("Failed to free the fsm.h.t for %s", addr)
+			failed = true
 		})
 		n.fsm.h.t.Kill(nil)
 		n.fsm.h.t.Wait()
 		t1.Stop()
+		if !failed {
+			log.WithFields(log.Fields{
+				"Topic": "Peer",
+				"Key":   addr,
+			}).Debug("freed fsm.h.t")
+			cleanInfiniteChannel(n.outgoing)
+		}
+		failed = false
 		t2 := time.AfterFunc(time.Minute*5, func() {
 			log.WithFields(log.Fields{
 				"Topic": "Peer",
 			}).Warnf("Failed to free the fsm.t for %s", addr)
+			failed = true
 		})
 		n.fsm.t.Kill(nil)
 		n.fsm.t.Wait()
 		t2.Stop()
+		if !failed {
+			log.WithFields(log.Fields{
+				"Topic": "Peer",
+				"Key":   addr,
+			}).Debug("freed fsm.t")
+		}
 	}(addr)
 	delete(server.neighborMap, addr)
 	server.dropPeerAllRoutes(n, n.configuredRFlist())

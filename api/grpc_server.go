@@ -95,6 +95,31 @@ func NewPeerFromConfigStruct(pconf *config.Neighbor) *Peer {
 			families = append(families, uint32(family))
 		}
 	}
+	applyPolicy := &ApplyPolicy{}
+	if len(pconf.ApplyPolicy.Config.ImportPolicyList) != 0 {
+		applyPolicy.ImportPolicy = &PolicyAssignment{
+			Type: PolicyType_IMPORT,
+		}
+		for _, pname := range pconf.ApplyPolicy.Config.ImportPolicyList {
+			applyPolicy.ImportPolicy.Policies = append(applyPolicy.ImportPolicy.Policies, &Policy{Name: pname})
+		}
+	}
+	if len(pconf.ApplyPolicy.Config.ExportPolicyList) != 0 {
+		applyPolicy.ExportPolicy = &PolicyAssignment{
+			Type: PolicyType_EXPORT,
+		}
+		for _, pname := range pconf.ApplyPolicy.Config.ExportPolicyList {
+			applyPolicy.ExportPolicy.Policies = append(applyPolicy.ExportPolicy.Policies, &Policy{Name: pname})
+		}
+	}
+	if len(pconf.ApplyPolicy.Config.InPolicyList) != 0 {
+		applyPolicy.InPolicy = &PolicyAssignment{
+			Type: PolicyType_IN,
+		}
+		for _, pname := range pconf.ApplyPolicy.Config.InPolicyList {
+			applyPolicy.InPolicy.Policies = append(applyPolicy.InPolicy.Policies, &Policy{Name: pname})
+		}
+	}
 	prefixLimits := make([]*PrefixLimit, 0, len(pconf.AfiSafis))
 	for _, family := range pconf.AfiSafis {
 		if c := family.PrefixLimit.Config; c.MaxPrefixes > 0 {
@@ -123,7 +148,8 @@ func NewPeerFromConfigStruct(pconf *config.Neighbor) *Peer {
 		localCap = append(localCap, c)
 	}
 	return &Peer{
-		Families: families,
+		Families:    families,
+		ApplyPolicy: applyPolicy,
 		Conf: &PeerConf{
 			NeighborAddress:   pconf.Config.NeighborAddress,
 			Id:                s.RemoteRouterId,
@@ -457,6 +483,7 @@ func (s *Server) api2PathList(resource Resource, ApiPathList []*Path) ([]*table.
 	var nlri bgp.AddrPrefixInterface
 	var nexthop string
 	var pi *table.PeerInfo
+	var err error
 
 	pathList := make([]*table.Path, 0, len(ApiPathList))
 	for _, path := range ApiPathList {
@@ -473,7 +500,10 @@ func (s *Server) api2PathList(resource Resource, ApiPathList []*Path) ([]*table.
 		}
 
 		if len(path.Nlri) > 0 {
-			nlri = &bgp.IPAddrPrefix{}
+			afi, safi := bgp.RouteFamilyToAfiSafi(bgp.RouteFamily(path.Family))
+			if nlri, err = bgp.NewPrefixFromRouteFamily(afi, safi); err != nil {
+				return nil, err
+			}
 			err := nlri.DecodeFromBytes(path.Nlri)
 			if err != nil {
 				return nil, err
@@ -520,9 +550,7 @@ func (s *Server) api2PathList(resource Resource, ApiPathList []*Path) ([]*table.
 			return nil, fmt.Errorf("not found nlri or nexthop")
 		}
 
-		rf := bgp.AfiSafiToRouteFamily(nlri.AFI(), nlri.SAFI())
-
-		if resource != Resource_VRF && rf == bgp.RF_IPv4_UC {
+		if resource != Resource_VRF && bgp.RouteFamily(path.Family) == bgp.RF_IPv4_UC {
 			pattr = append(pattr, bgp.NewPathAttributeNextHop(nexthop))
 		} else {
 			pattr = append(pattr, bgp.NewPathAttributeMpReachNLRI(nexthop, []bgp.AddrPrefixInterface{nlri}))
@@ -1181,14 +1209,16 @@ func NewAPIStatementFromTableStruct(t *table.Statement) *Statement {
 func toStatementApi(s *config.Statement) *Statement {
 	cs := &Conditions{}
 	if s.Conditions.MatchPrefixSet.PrefixSet != "" {
+		o, _ := table.NewMatchOption(s.Conditions.MatchPrefixSet.MatchSetOptions)
 		cs.PrefixSet = &MatchSet{
-			Type: MatchType(s.Conditions.MatchPrefixSet.MatchSetOptions.ToInt()),
+			Type: MatchType(o),
 			Name: s.Conditions.MatchPrefixSet.PrefixSet,
 		}
 	}
 	if s.Conditions.MatchNeighborSet.NeighborSet != "" {
+		o, _ := table.NewMatchOption(s.Conditions.MatchNeighborSet.MatchSetOptions)
 		cs.NeighborSet = &MatchSet{
-			Type: MatchType(s.Conditions.MatchNeighborSet.MatchSetOptions.ToInt()),
+			Type: MatchType(o),
 			Name: s.Conditions.MatchNeighborSet.NeighborSet,
 		}
 	}
@@ -1211,13 +1241,13 @@ func toStatementApi(s *config.Statement) *Statement {
 		}
 	}
 	if s.Conditions.BgpConditions.MatchExtCommunitySet.ExtCommunitySet != "" {
-		cs.CommunitySet = &MatchSet{
+		cs.ExtCommunitySet = &MatchSet{
 			Type: MatchType(s.Conditions.BgpConditions.MatchExtCommunitySet.MatchSetOptions.ToInt()),
 			Name: s.Conditions.BgpConditions.MatchExtCommunitySet.ExtCommunitySet,
 		}
 	}
 	if s.Conditions.BgpConditions.MatchLargeCommunitySet.LargeCommunitySet != "" {
-		cs.CommunitySet = &MatchSet{
+		cs.LargeCommunitySet = &MatchSet{
 			Type: MatchType(s.Conditions.BgpConditions.MatchLargeCommunitySet.MatchSetOptions.ToInt()),
 			Name: s.Conditions.BgpConditions.MatchLargeCommunitySet.LargeCommunitySet,
 		}
