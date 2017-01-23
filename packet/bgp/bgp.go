@@ -44,7 +44,7 @@ const (
 	SAFI_EVPN                     = 70
 	SAFI_MPLS_VPN                 = 128
 	SAFI_MPLS_VPN_MULTICAST       = 129
-	SAFI_ROUTE_TARGET_CONSTRTAINS = 132
+	SAFI_ROUTE_TARGET_CONSTRAINTS = 132
 	SAFI_FLOW_SPEC_UNICAST        = 133
 	SAFI_FLOW_SPEC_VPN            = 134
 	SAFI_KEY_VALUE                = 241
@@ -64,7 +64,7 @@ const (
 )
 
 // RFC7153 5.1. Registries for the "Type" Field
-// RANGE	REGISTRACTION PROCEDURES
+// RANGE	REGISTRATION PROCEDURES
 // 0x00-0x3F	Transitive First Come First Served
 // 0x40-0x7F	Non-Transitive First Come First Served
 // 0x80-0x8F	Transitive Experimental Use
@@ -92,8 +92,8 @@ const (
 	EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL3      ExtendedCommunityAttrType = 0x82 // RFC7674
 )
 
-// RFC7153 5.2. Registraction for the "Sub-Type" Field
-// RANGE	REGISTRACTION PROCEDURES
+// RFC7153 5.2. Registries for the "Sub-Type" Field
+// RANGE	REGISTRATION PROCEDURES
 // 0x00-0xBF	First Come First Served
 // 0xC0-0xFF	IETF Review
 type ExtendedCommunityAttrSubType uint8
@@ -1586,7 +1586,7 @@ func (n *RouteTargetMembershipNLRI) AFI() uint16 {
 }
 
 func (n *RouteTargetMembershipNLRI) SAFI() uint8 {
-	return SAFI_ROUTE_TARGET_CONSTRTAINS
+	return SAFI_ROUTE_TARGET_CONSTRAINTS
 }
 
 func (n *RouteTargetMembershipNLRI) Len() int {
@@ -2427,7 +2427,7 @@ func flowSpecPrefixParser(rf RouteFamily, args []string) (FlowSpecComponentInter
 		return nil, fmt.Errorf("invalid flowspec dst/src prefix")
 	}
 	typ := args[0]
-	ip, net, err := net.ParseCIDR(args[1])
+	ip, nw, err := net.ParseCIDR(args[1])
 	if err != nil {
 		return nil, fmt.Errorf("invalid ip prefix")
 	}
@@ -2437,7 +2437,7 @@ func flowSpecPrefixParser(rf RouteFamily, args []string) (FlowSpecComponentInter
 	} else if afi == AFI_IP6 && !strings.Contains(ip.String(), ":") {
 		return nil, fmt.Errorf("invalid ipv6 prefix")
 	}
-	ones, _ := net.Mask.Size()
+	ones, _ := nw.Mask.Size()
 	var offset uint8
 	if len(args) > 2 {
 		o, err := strconv.Atoi(args[2])
@@ -3686,7 +3686,7 @@ const (
 	RF_IPv6_MPLS   RouteFamily = AFI_IP6<<16 | SAFI_MPLS_LABEL
 	RF_VPLS        RouteFamily = AFI_L2VPN<<16 | SAFI_VPLS
 	RF_EVPN        RouteFamily = AFI_L2VPN<<16 | SAFI_EVPN
-	RF_RTC_UC      RouteFamily = AFI_IP<<16 | SAFI_ROUTE_TARGET_CONSTRTAINS
+	RF_RTC_UC      RouteFamily = AFI_IP<<16 | SAFI_ROUTE_TARGET_CONSTRAINTS
 	RF_IPv4_ENCAP  RouteFamily = AFI_IP<<16 | SAFI_ENCAPSULATION
 	RF_IPv6_ENCAP  RouteFamily = AFI_IP6<<16 | SAFI_ENCAPSULATION
 	RF_FS_IPv4_UC  RouteFamily = AFI_IP<<16 | SAFI_FLOW_SPEC_UNICAST
@@ -3787,9 +3787,9 @@ func NewPrefixFromRouteFamily(afi uint16, safi uint8) (prefix AddrPrefixInterfac
 	case RF_OPAQUE:
 		prefix = &OpaqueNLRI{}
 	default:
-		return nil, fmt.Errorf("unknown route family. AFI: %d, SAFI: %d", afi, safi)
+		err = fmt.Errorf("unknown route family. AFI: %d, SAFI: %d", afi, safi)
 	}
-	return prefix, nil
+	return prefix, err
 }
 
 type BGPAttrFlag uint8
@@ -4194,10 +4194,10 @@ type AsPathParamFormat struct {
 }
 
 var asPathParamFormatMap = map[uint8]*AsPathParamFormat{
-	BGP_ASPATH_ATTR_TYPE_SET:        &AsPathParamFormat{"{", "}", ","},
-	BGP_ASPATH_ATTR_TYPE_SEQ:        &AsPathParamFormat{"", "", " "},
-	BGP_ASPATH_ATTR_TYPE_CONFED_SET: &AsPathParamFormat{"(", ")", " "},
-	BGP_ASPATH_ATTR_TYPE_CONFED_SEQ: &AsPathParamFormat{"[", "]", ","},
+	BGP_ASPATH_ATTR_TYPE_SET:        {"{", "}", ","},
+	BGP_ASPATH_ATTR_TYPE_SEQ:        {"", "", " "},
+	BGP_ASPATH_ATTR_TYPE_CONFED_SET: {"(", ")", " "},
+	BGP_ASPATH_ATTR_TYPE_CONFED_SEQ: {"[", "]", ","},
 }
 
 type AsPathParamInterface interface {
@@ -5032,7 +5032,6 @@ func (p *PathAttributeMpReachNLRI) DecodeFromBytes(data []byte) error {
 	}
 	eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
 	eSubCode := uint8(BGP_ERROR_SUB_ATTRIBUTE_LENGTH_ERROR)
-
 	value := p.PathAttribute.Value
 	if len(value) < 3 {
 		return NewMessageError(eCode, eSubCode, value, "mpreach header length is short")
@@ -5045,35 +5044,31 @@ func (p *PathAttributeMpReachNLRI) DecodeFromBytes(data []byte) error {
 	if err != nil {
 		return NewMessageError(eCode, BGP_ERROR_SUB_ATTRIBUTE_FLAGS_ERROR, data[:p.PathAttribute.Len()], err.Error())
 	}
-	nexthopLen := value[3]
-	if len(value) < 4+int(nexthopLen) {
+	nexthoplen := int(value[3])
+	if len(value) < 4+nexthoplen {
 		return NewMessageError(eCode, eSubCode, value, "mpreach nexthop length is short")
 	}
-	nexthopbin := value[4 : 4+nexthopLen]
-	value = value[4+nexthopLen:]
-	if nexthopLen > 0 {
+	nexthopbin := value[4 : 4+nexthoplen]
+	if nexthoplen > 0 {
+		addrlen := 4
+		if afi == AFI_IP6 {
+			addrlen = 16
+		}
 		offset := 0
 		if safi == SAFI_MPLS_VPN {
 			offset = 8
 		}
-		addrlen := 4
-		hasLinkLocal := false
-
-		if afi == AFI_IP6 {
-			addrlen = 16
-			hasLinkLocal = len(nexthopbin) == offset+2*addrlen
-		}
-
-		isValid := len(nexthopbin) == offset+addrlen || hasLinkLocal
-
-		if !isValid {
+		switch nexthoplen {
+		case 2 * (offset + addrlen):
+			p.LinkLocalNexthop = nexthopbin[offset+addrlen+offset : 2*(offset+addrlen)]
+			fallthrough
+		case offset + addrlen:
+			p.Nexthop = nexthopbin[offset : offset+addrlen]
+		default:
 			return NewMessageError(eCode, eSubCode, value, "mpreach nexthop length is incorrect")
 		}
-		p.Nexthop = nexthopbin[offset : +offset+addrlen]
-		if hasLinkLocal {
-			p.LinkLocalNexthop = nexthopbin[offset+addrlen : offset+2*addrlen]
-		}
 	}
+	value = value[4+nexthoplen:]
 	// skip reserved
 	if len(value) == 0 {
 		return NewMessageError(eCode, eSubCode, value, "no skip byte")
@@ -5103,25 +5098,31 @@ func (p *PathAttributeMpReachNLRI) Serialize() ([]byte, error) {
 	nexthoplen := 4
 	if afi == AFI_IP6 {
 		nexthoplen = 16
-		if p.LinkLocalNexthop != nil {
-			nexthoplen += 16
-		}
 	}
 	offset := 0
 	switch safi {
 	case SAFI_MPLS_VPN:
 		offset = 8
-		nexthoplen += 8
+		nexthoplen += offset
 	case SAFI_FLOW_SPEC_VPN, SAFI_FLOW_SPEC_UNICAST:
 		nexthoplen = 0
+	}
+	if p.LinkLocalNexthop != nil {
+		nexthoplen *= 2
 	}
 	buf := make([]byte, 4+nexthoplen)
 	binary.BigEndian.PutUint16(buf[0:], afi)
 	buf[2] = safi
 	buf[3] = uint8(nexthoplen)
-	copy(buf[4+offset:], p.Nexthop)
-	if p.LinkLocalNexthop != nil {
-		copy(buf[4+offset+len(p.Nexthop):], p.LinkLocalNexthop)
+	if nexthoplen != 0 {
+		if afi == AFI_IP6 {
+			copy(buf[4+offset:], p.Nexthop.To16())
+			if p.LinkLocalNexthop != nil {
+				copy(buf[4+offset+16:], p.LinkLocalNexthop.To16())
+			}
+		} else {
+			copy(buf[4+offset:], p.Nexthop)
+		}
 	}
 	buf = append(buf, make([]byte, 1)...)
 	for _, prefix := range p.Value {
@@ -6417,12 +6418,12 @@ func (t *TunnelEncapSubTLVDefault) Serialize() ([]byte, error) {
 	return t.Value, nil
 }
 
-type TunnelEncapSubTLVEncapuslation struct {
+type TunnelEncapSubTLVEncapsulation struct {
 	Key    uint32 // this represent both SessionID for L2TPv3 case and GRE-key for GRE case (RFC5512 4.)
 	Cookie []byte
 }
 
-func (t *TunnelEncapSubTLVEncapuslation) Serialize() ([]byte, error) {
+func (t *TunnelEncapSubTLVEncapsulation) Serialize() ([]byte, error) {
 	buf := make([]byte, 4)
 	binary.BigEndian.PutUint32(buf, t.Key)
 	return append(buf, t.Cookie...), nil
@@ -6476,7 +6477,7 @@ func (p *TunnelEncapSubTLV) DecodeFromBytes(data []byte) error {
 			return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "Not all TunnelEncapSubTLV bytes available")
 		}
 		key := binary.BigEndian.Uint32(data[:4])
-		p.Value = &TunnelEncapSubTLVEncapuslation{
+		p.Value = &TunnelEncapSubTLVEncapsulation{
 			Key:    key,
 			Cookie: data[4:],
 		}
@@ -7346,7 +7347,7 @@ func (msg *BGPHeader) DecodeFromBytes(data []byte) error {
 
 func (msg *BGPHeader) Serialize() ([]byte, error) {
 	buf := make([]byte, 19)
-	for i, _ := range buf[:16] {
+	for i := range buf[:16] {
 		buf[i] = 0xff
 	}
 	binary.BigEndian.PutUint16(buf[16:18], msg.Len)

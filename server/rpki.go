@@ -37,9 +37,13 @@ func before(a, b uint32) bool {
 	return int32(a-b) < 0
 }
 
-type roaBucket struct {
+type RoaBucket struct {
 	Prefix  *table.IPPrefix
 	entries []*table.ROA
+}
+
+func (r *RoaBucket) GetEntries() []*table.ROA {
+	return r.entries
 }
 
 type roas []*table.ROA
@@ -145,7 +149,7 @@ func (m *roaManager) deleteAllROA(network string) {
 	for _, tree := range m.Roas {
 		deleteKeys := make([]string, 0, tree.Len())
 		tree.Walk(func(s string, v interface{}) bool {
-			b, _ := v.(*roaBucket)
+			b, _ := v.(*RoaBucket)
 			newEntries := make([]*table.ROA, 0, len(b.entries))
 			for _, r := range b.entries {
 				if r.Src != network {
@@ -280,7 +284,7 @@ func (m *roaManager) deleteROA(roa *table.ROA) {
 	tree, key := m.roa2tree(roa)
 	b, _ := tree.Get(key)
 	if b != nil {
-		bucket := b.(*roaBucket)
+		bucket := b.(*RoaBucket)
 		newEntries := make([]*table.ROA, 0, len(bucket.entries))
 		for _, r := range bucket.entries {
 			if !r.Equal(roa) {
@@ -307,15 +311,15 @@ func (m *roaManager) deleteROA(roa *table.ROA) {
 func (m *roaManager) addROA(roa *table.ROA) {
 	tree, key := m.roa2tree(roa)
 	b, _ := tree.Get(key)
-	var bucket *roaBucket
+	var bucket *RoaBucket
 	if b == nil {
-		bucket = &roaBucket{
+		bucket = &RoaBucket{
 			Prefix:  roa.Prefix,
 			entries: make([]*table.ROA, 0),
 		}
 		tree.Insert(key, bucket)
 	} else {
-		bucket = b.(*roaBucket)
+		bucket = b.(*RoaBucket)
 		for _, r := range bucket.entries {
 			if r.Equal(roa) {
 				// we already have the same one
@@ -404,7 +408,7 @@ func (c *roaManager) GetServers() []*config.RpkiServer {
 		prefixes := make(map[string]uint32)
 
 		tree.Walk(func(s string, v interface{}) bool {
-			b, _ := v.(*roaBucket)
+			b, _ := v.(*RoaBucket)
 			tmpRecords := make(map[string]uint32)
 			for _, roa := range b.entries {
 				tmpRecords[roa.Src]++
@@ -474,7 +478,7 @@ func (c *roaManager) GetRoa(family bgp.RouteFamily) ([]*table.ROA, error) {
 	for _, rf := range rfList {
 		if tree, ok := c.Roas[rf]; ok {
 			tree.Walk(func(s string, v interface{}) bool {
-				b, _ := v.(*roaBucket)
+				b, _ := v.(*RoaBucket)
 				var roaList roas
 				for _, r := range b.entries {
 					roaList = append(roaList, r)
@@ -490,7 +494,7 @@ func (c *roaManager) GetRoa(family bgp.RouteFamily) ([]*table.ROA, error) {
 	return l, nil
 }
 
-func validatePath(ownAs uint32, tree *radix.Tree, cidr string, asPath *bgp.PathAttributeAsPath) config.RpkiValidationResultType {
+func ValidatePath(ownAs uint32, tree *radix.Tree, cidr string, asPath *bgp.PathAttributeAsPath) (config.RpkiValidationResultType, *RoaBucket) {
 	var as uint32
 
 	if asPath == nil || len(asPath.Value) == 0 {
@@ -507,27 +511,32 @@ func validatePath(ownAs uint32, tree *radix.Tree, cidr string, asPath *bgp.PathA
 		case bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SET, bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SEQ:
 			as = ownAs
 		default:
-			return config.RPKI_VALIDATION_RESULT_TYPE_NOT_FOUND
+			return config.RPKI_VALIDATION_RESULT_TYPE_NOT_FOUND, nil
 		}
 	}
 	_, n, _ := net.ParseCIDR(cidr)
 	ones, _ := n.Mask.Size()
 	prefixLen := uint8(ones)
-	_, b, _ := tree.LongestPrefix(table.IpToRadixkey(n.IP, prefixLen))
+	key := table.IpToRadixkey(n.IP, prefixLen)
+	_, b, _ := tree.LongestPrefix(key)
 	if b == nil {
-		return config.RPKI_VALIDATION_RESULT_TYPE_NOT_FOUND
+		return config.RPKI_VALIDATION_RESULT_TYPE_NOT_FOUND, nil
 	}
 
-	bucket, _ := b.(*roaBucket)
-	for _, r := range bucket.entries {
-		if prefixLen > r.MaxLen {
-			continue
+	result := config.RPKI_VALIDATION_RESULT_TYPE_INVALID
+	var bucket *RoaBucket
+	fn := radix.WalkFn(func(k string, v interface{}) bool {
+		bucket, _ = v.(*RoaBucket)
+		for _, r := range bucket.entries {
+			if prefixLen <= r.MaxLen && r.AS != 0 && r.AS == as {
+				result = config.RPKI_VALIDATION_RESULT_TYPE_VALID
+				return true
+			}
 		}
-		if r.AS == as {
-			return config.RPKI_VALIDATION_RESULT_TYPE_VALID
-		}
-	}
-	return config.RPKI_VALIDATION_RESULT_TYPE_INVALID
+		return false
+	})
+	tree.WalkPath(key, fn)
+	return result, bucket
 }
 
 func (c *roaManager) validate(pathList []*table.Path) {
@@ -541,7 +550,7 @@ func (c *roaManager) validate(pathList []*table.Path) {
 			continue
 		}
 		if tree, ok := c.Roas[path.GetRouteFamily()]; ok {
-			r := validatePath(c.AS, tree, path.GetNlri().String(), path.GetAsPath())
+			r, _ := ValidatePath(c.AS, tree, path.GetNlri().String(), path.GetAsPath())
 			path.SetValidation(config.RpkiValidationResultType(r))
 		}
 	}
