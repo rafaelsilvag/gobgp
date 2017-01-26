@@ -28,7 +28,6 @@ import (
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/table"
-	"github.com/satori/go.uuid"
 )
 
 type TCPListener struct {
@@ -993,7 +992,7 @@ func (s *BgpServer) AddBmp(c *config.BmpServerConfig) error {
 	}, true)
 }
 
-func (s *BgpServer) DeleteBmp(c *config.BmpServerConfig) (err error) {
+func (s *BgpServer) DeleteBmp(c *config.BmpServerConfig) error {
 	return s.mgmtOperation(func() error {
 		return s.bmpManager.deleteServer(c)
 	}, true)
@@ -1133,13 +1132,12 @@ func (server *BgpServer) fixupApiPath(vrfId string, pathList []*table.Path) erro
 }
 
 func (s *BgpServer) AddPath(vrfId string, pathList []*table.Path) (uuidBytes []byte, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		if err := s.fixupApiPath(vrfId, pathList); err != nil {
 			return err
 		}
 		if len(pathList) == 1 {
-			uuidBytes = uuid.NewV4().Bytes()
-			pathList[0].SetUUID(uuidBytes)
+			pathList[0].AssignNewUUID()
 		}
 		s.propagateUpdate(nil, pathList)
 		return nil
@@ -1153,7 +1151,7 @@ func (s *BgpServer) DeletePath(uuid []byte, f bgp.RouteFamily, vrfId string, pat
 		if len(uuid) > 0 {
 			path := func() *table.Path {
 				for _, path := range s.globalRib.GetPathList(table.GLOBAL_RIB_NAME, s.globalRib.GetRFlist()) {
-					if len(path.UUID()) > 0 && bytes.Equal(path.UUID(), uuid) {
+					if len(path.UUID()) > 0 && bytes.Equal(path.UUID().Bytes(), uuid) {
 						return path
 					}
 				}
@@ -1401,7 +1399,7 @@ func (s *BgpServer) SoftReset(addr string, family bgp.RouteFamily) error {
 }
 
 func (s *BgpServer) GetRib(addr string, family bgp.RouteFamily, prefixes []*table.LookupPrefix) (rib *table.Table, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		m := s.globalRib
 		id := table.GLOBAL_RIB_NAME
 		if len(addr) > 0 {
@@ -1426,7 +1424,7 @@ func (s *BgpServer) GetRib(addr string, family bgp.RouteFamily, prefixes []*tabl
 }
 
 func (s *BgpServer) GetVrfRib(name string, family bgp.RouteFamily, prefixes []*table.LookupPrefix) (rib *table.Table, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		m := s.globalRib
 		vrfs := m.Vrfs
 		if _, ok := vrfs[name]; !ok {
@@ -1452,7 +1450,7 @@ func (s *BgpServer) GetVrfRib(name string, family bgp.RouteFamily, prefixes []*t
 }
 
 func (s *BgpServer) GetAdjRib(addr string, family bgp.RouteFamily, in bool, prefixes []*table.LookupPrefix) (rib *table.Table, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		peer, ok := s.neighborMap[addr]
 		if !ok {
 			return fmt.Errorf("Neighbor that has %v doesn't exist.", addr)
@@ -1474,7 +1472,7 @@ func (s *BgpServer) GetAdjRib(addr string, family bgp.RouteFamily, in bool, pref
 }
 
 func (s *BgpServer) GetRibInfo(addr string, family bgp.RouteFamily) (info *table.TableInfo, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		m := s.globalRib
 		id := table.GLOBAL_RIB_NAME
 		if len(addr) > 0 {
@@ -1494,7 +1492,7 @@ func (s *BgpServer) GetRibInfo(addr string, family bgp.RouteFamily) (info *table
 }
 
 func (s *BgpServer) GetAdjRibInfo(addr string, family bgp.RouteFamily, in bool) (info *table.TableInfo, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		peer, ok := s.neighborMap[addr]
 		if !ok {
 			return fmt.Errorf("Neighbor that has %v doesn't exist.", addr)
@@ -1680,7 +1678,7 @@ func (s *BgpServer) DeleteNeighbor(c *config.Neighbor) error {
 }
 
 func (s *BgpServer) UpdateNeighbor(c *config.Neighbor) (policyUpdated bool, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		addr := c.Config.NeighborAddress
 		peer, ok := s.neighborMap[addr]
 		if !ok {
@@ -1842,7 +1840,7 @@ func (s *BgpServer) DisableNeighbor(addr string) error {
 }
 
 func (s *BgpServer) GetDefinedSet(typ table.DefinedType) (sets *config.DefinedSets, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		sets, err = s.policy.GetDefinedSet(typ)
 		return nil
 	}, false)
@@ -1945,7 +1943,7 @@ func (server *BgpServer) toPolicyInfo(name string, dir table.PolicyDirection) (s
 }
 
 func (s *BgpServer) GetPolicyAssignment(name string, dir table.PolicyDirection) (rt table.RouteType, l []*config.PolicyDefinition, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		var id string
 		id, err = s.toPolicyInfo(name, dir)
 		if err != nil {
@@ -2021,7 +2019,7 @@ func (s *BgpServer) ValidateRib(prefix string) error {
 }
 
 func (s *BgpServer) GetRpki() (l []*config.RpkiServer, err error) {
-	s.mgmtOperation(func() error {
+	err = s.mgmtOperation(func() error {
 		l = s.roaManager.GetServers()
 		return nil
 	}, false)
