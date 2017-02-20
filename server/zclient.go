@@ -138,6 +138,7 @@ func createPathFromIPRouteMessage(m *zebra.Message) *table.Path {
 		"IfIndex":      body.Ifindexs,
 		"Metric":       body.Metric,
 		"Distance":     body.Distance,
+		"Mtu":          body.Mtu,
 		"api":          header.Command.String(),
 	}).Debugf("create path from ip route message.")
 
@@ -176,7 +177,7 @@ func (z *zebraClient) stop() {
 }
 
 func (z *zebraClient) loop() {
-	w := z.server.Watch(WatchBestPath())
+	w := z.server.Watch(WatchBestPath(true))
 	defer func() { w.Stop() }()
 
 	for {

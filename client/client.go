@@ -193,13 +193,13 @@ func (cli *Client) DeleteNeighbor(c *config.Neighbor) error {
 //func (cli *Client) UpdateNeighbor(c *config.Neighbor) (bool, error) {
 //}
 
-func (cli *Client) ShutdownNeighbor(addr string) error {
-	_, err := cli.cli.ShutdownNeighbor(context.Background(), &api.ShutdownNeighborRequest{Address: addr})
+func (cli *Client) ShutdownNeighbor(addr, communication string) error {
+	_, err := cli.cli.ShutdownNeighbor(context.Background(), &api.ShutdownNeighborRequest{Address: addr, Communication: communication})
 	return err
 }
 
-func (cli *Client) ResetNeighbor(addr string) error {
-	_, err := cli.cli.ResetNeighbor(context.Background(), &api.ResetNeighborRequest{Address: addr})
+func (cli *Client) ResetNeighbor(addr, communication string) error {
+	_, err := cli.cli.ResetNeighbor(context.Background(), &api.ResetNeighborRequest{Address: addr, Communication: communication})
 	return err
 }
 
@@ -208,8 +208,8 @@ func (cli *Client) EnableNeighbor(addr string) error {
 	return err
 }
 
-func (cli *Client) DisableNeighbor(addr string) error {
-	_, err := cli.cli.DisableNeighbor(context.Background(), &api.DisableNeighborRequest{Address: addr})
+func (cli *Client) DisableNeighbor(addr, communication string) error {
+	_, err := cli.cli.DisableNeighbor(context.Background(), &api.DisableNeighborRequest{Address: addr, Communication: communication})
 	return err
 }
 
@@ -912,10 +912,13 @@ func (c *MonitorRIBClient) Recv() (*table.Destination, error) {
 	return d.ToNativeDestination()
 }
 
-func (cli *Client) MonitorRIB(family bgp.RouteFamily) (*MonitorRIBClient, error) {
-	stream, err := cli.cli.MonitorRib(context.Background(), &api.Table{
-		Type:   api.Resource_GLOBAL,
-		Family: uint32(family),
+func (cli *Client) MonitorRIB(family bgp.RouteFamily, current bool) (*MonitorRIBClient, error) {
+	stream, err := cli.cli.MonitorRib(context.Background(), &api.MonitorRibRequest{
+		Table: &api.Table{
+			Type:   api.Resource_GLOBAL,
+			Family: uint32(family),
+		},
+		Current: current,
 	})
 	if err != nil {
 		return nil, err
@@ -923,11 +926,14 @@ func (cli *Client) MonitorRIB(family bgp.RouteFamily) (*MonitorRIBClient, error)
 	return &MonitorRIBClient{stream}, nil
 }
 
-func (cli *Client) MonitorAdjRIBIn(name string, family bgp.RouteFamily) (*MonitorRIBClient, error) {
-	stream, err := cli.cli.MonitorRib(context.Background(), &api.Table{
-		Type:   api.Resource_ADJ_IN,
-		Name:   name,
-		Family: uint32(family),
+func (cli *Client) MonitorAdjRIBIn(name string, family bgp.RouteFamily, current bool) (*MonitorRIBClient, error) {
+	stream, err := cli.cli.MonitorRib(context.Background(), &api.MonitorRibRequest{
+		Table: &api.Table{
+			Type:   api.Resource_ADJ_IN,
+			Name:   name,
+			Family: uint32(family),
+		},
+		Current: current,
 	})
 	if err != nil {
 		return nil, err

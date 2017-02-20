@@ -1001,8 +1001,9 @@ func (s *BgpServer) DeleteBmp(c *config.BmpServerConfig) error {
 func (s *BgpServer) Shutdown() {
 	s.mgmtOperation(func() error {
 		s.shutdown = true
+		stateOp := AdminStateOperation{ADMIN_STATE_DOWN, nil}
 		for _, p := range s.neighborMap {
-			p.fsm.adminStateCh <- ADMIN_STATE_DOWN
+			p.fsm.adminStateCh <- stateOp
 		}
 		// TODO: call fsmincomingCh.Close()
 		return nil
@@ -1765,7 +1766,7 @@ func (s *BgpServer) addrToPeers(addr string) (l []*Peer, err error) {
 	return []*Peer{peer}, nil
 }
 
-func (s *BgpServer) resetNeighbor(op, addr string, subcode uint8) error {
+func (s *BgpServer) resetNeighbor(op, addr string, subcode uint8, data []byte) error {
 	log.WithFields(log.Fields{
 		"Topic": "Operation",
 		"Key":   addr,
@@ -1773,7 +1774,7 @@ func (s *BgpServer) resetNeighbor(op, addr string, subcode uint8) error {
 
 	peers, err := s.addrToPeers(addr)
 	if err == nil {
-		m := bgp.NewBGPNotificationMessage(bgp.BGP_ERROR_CEASE, subcode, nil)
+		m := bgp.NewBGPNotificationMessage(bgp.BGP_ERROR_CEASE, subcode, data)
 		for _, peer := range peers {
 			sendFsmOutgoingMsg(peer, nil, m, false)
 		}
@@ -1781,15 +1782,15 @@ func (s *BgpServer) resetNeighbor(op, addr string, subcode uint8) error {
 	return err
 }
 
-func (s *BgpServer) ShutdownNeighbor(addr string) error {
+func (s *BgpServer) ShutdownNeighbor(addr, communication string) error {
 	return s.mgmtOperation(func() error {
-		return s.resetNeighbor("Neighbor shutdown", addr, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_SHUTDOWN)
+		return s.resetNeighbor("Neighbor shutdown", addr, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_SHUTDOWN, newAdministrativeCommunication(communication))
 	}, true)
 }
 
-func (s *BgpServer) ResetNeighbor(addr string) error {
+func (s *BgpServer) ResetNeighbor(addr, communication string) error {
 	return s.mgmtOperation(func() error {
-		err := s.resetNeighbor("Neighbor reset", addr, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_RESET)
+		err := s.resetNeighbor("Neighbor reset", addr, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_RESET, newAdministrativeCommunication(communication))
 		if err != nil {
 			return err
 		}
@@ -1801,15 +1802,15 @@ func (s *BgpServer) ResetNeighbor(addr string) error {
 	}, true)
 }
 
-func (s *BgpServer) setAdminState(addr string, enable bool) error {
+func (s *BgpServer) setAdminState(addr, communication string, enable bool) error {
 	peers, err := s.addrToPeers(addr)
 	if err != nil {
 		return err
 	}
 	for _, peer := range peers {
-		f := func(state AdminState, message string) {
+		f := func(stateOp *AdminStateOperation, message string) {
 			select {
-			case peer.fsm.adminStateCh <- state:
+			case peer.fsm.adminStateCh <- *stateOp:
 				log.WithFields(log.Fields{
 					"Topic": "Peer",
 					"Key":   peer.fsm.pConf.Config.NeighborAddress,
@@ -1819,9 +1820,9 @@ func (s *BgpServer) setAdminState(addr string, enable bool) error {
 			}
 		}
 		if enable {
-			f(ADMIN_STATE_UP, "ADMIN_STATE_UP requested")
+			f(&AdminStateOperation{ADMIN_STATE_UP, nil}, "ADMIN_STATE_UP requested")
 		} else {
-			f(ADMIN_STATE_DOWN, "ADMIN_STATE_DOWN requested")
+			f(&AdminStateOperation{ADMIN_STATE_DOWN, newAdministrativeCommunication(communication)}, "ADMIN_STATE_DOWN requested")
 		}
 	}
 	return nil
@@ -1829,13 +1830,13 @@ func (s *BgpServer) setAdminState(addr string, enable bool) error {
 
 func (s *BgpServer) EnableNeighbor(addr string) error {
 	return s.mgmtOperation(func() error {
-		return s.setAdminState(addr, true)
+		return s.setAdminState(addr, "", true)
 	}, true)
 }
 
-func (s *BgpServer) DisableNeighbor(addr string) error {
+func (s *BgpServer) DisableNeighbor(addr, communication string) error {
 	return s.mgmtOperation(func() error {
-		return s.setAdminState(addr, false)
+		return s.setAdminState(addr, communication, false)
 	}, true)
 }
 
@@ -2132,6 +2133,7 @@ type watchOptions struct {
 	preUpdate      bool
 	postUpdate     bool
 	peerState      bool
+	initBest       bool
 	initUpdate     bool
 	initPostUpdate bool
 	initPeerState  bool
@@ -2140,9 +2142,12 @@ type watchOptions struct {
 
 type WatchOption func(*watchOptions)
 
-func WatchBestPath() WatchOption {
+func WatchBestPath(current bool) WatchOption {
 	return func(o *watchOptions) {
 		o.bestpath = true
+		if current {
+			o.initBest = true
+		}
 	}
 }
 
@@ -2318,46 +2323,89 @@ func (s *BgpServer) Watch(opts ...WatchOption) (w *Watcher) {
 				w.notify(createWatchEventPeerState(peer))
 			}
 		}
+		if w.opts.initBest && s.active() == nil {
+			w.notify(&WatchEventBestPath{
+				PathList:      s.globalRib.GetBestPathList(table.GLOBAL_RIB_NAME, nil),
+				MultiPathList: s.globalRib.GetBestMultiPathList(table.GLOBAL_RIB_NAME, nil),
+			})
+		}
 		if w.opts.initUpdate {
 			for _, peer := range s.neighborMap {
 				if peer.fsm.state != bgp.BGP_FSM_ESTABLISHED {
 					continue
 				}
-				for _, path := range peer.adjRibIn.PathList(peer.configuredRFlist(), false) {
-					msgs := table.CreateUpdateMsgFromPaths([]*table.Path{path})
-					buf, _ := msgs[0].Serialize()
+				for _, rf := range peer.configuredRFlist() {
 					_, y := peer.fsm.capMap[bgp.BGP_CAP_FOUR_OCTET_AS_NUMBER]
 					l, _ := peer.fsm.LocalHostPort()
+					for _, path := range peer.adjRibIn.PathList([]bgp.RouteFamily{rf}, false) {
+						msgs := table.CreateUpdateMsgFromPaths([]*table.Path{path})
+						buf, _ := msgs[0].Serialize()
+						w.notify(&WatchEventUpdate{
+							Message:      msgs[0],
+							PeerAS:       peer.fsm.peerInfo.AS,
+							LocalAS:      peer.fsm.peerInfo.LocalAS,
+							PeerAddress:  peer.fsm.peerInfo.Address,
+							LocalAddress: net.ParseIP(l),
+							PeerID:       peer.fsm.peerInfo.ID,
+							FourBytesAs:  y,
+							Timestamp:    path.GetTimestamp(),
+							Payload:      buf,
+							PostPolicy:   false,
+						})
+					}
+					eor := bgp.NewEndOfRib(rf)
+					eorBuf, _ := eor.Serialize()
 					w.notify(&WatchEventUpdate{
-						Message:      msgs[0],
+						Message:      eor,
 						PeerAS:       peer.fsm.peerInfo.AS,
 						LocalAS:      peer.fsm.peerInfo.LocalAS,
 						PeerAddress:  peer.fsm.peerInfo.Address,
 						LocalAddress: net.ParseIP(l),
 						PeerID:       peer.fsm.peerInfo.ID,
 						FourBytesAs:  y,
-						Timestamp:    path.GetTimestamp(),
-						Payload:      buf,
+						Timestamp:    time.Now(),
+						Payload:      eorBuf,
 						PostPolicy:   false,
 					})
 				}
 			}
 		}
-		if w.opts.postUpdate {
-			for _, path := range s.globalRib.GetBestPathList(table.GLOBAL_RIB_NAME, s.globalRib.GetRFlist()) {
-				msgs := table.CreateUpdateMsgFromPaths([]*table.Path{path})
-				buf, _ := msgs[0].Serialize()
-				w.notify(&WatchEventUpdate{
-					PeerAS:      path.GetSource().AS,
-					PeerAddress: path.GetSource().Address,
-					PeerID:      path.GetSource().ID,
-					Message:     msgs[0],
-					Timestamp:   path.GetTimestamp(),
-					Payload:     buf,
-					PostPolicy:  true,
-				})
+		if w.opts.initPostUpdate && s.active() == nil {
+			for _, rf := range s.globalRib.GetRFlist() {
+				if len(s.globalRib.Tables[rf].GetDestinations()) == 0 {
+					continue
+				}
+				pathsByPeer := make(map[*table.PeerInfo][]*table.Path)
+				for _, path := range s.globalRib.GetPathList(table.GLOBAL_RIB_NAME, []bgp.RouteFamily{rf}) {
+					pathsByPeer[path.GetSource()] = append(pathsByPeer[path.GetSource()], path)
+				}
+				for peerInfo, paths := range pathsByPeer {
+					for _, path := range paths {
+						msgs := table.CreateUpdateMsgFromPaths([]*table.Path{path})
+						buf, _ := msgs[0].Serialize()
+						w.notify(&WatchEventUpdate{
+							Message:     msgs[0],
+							PeerAS:      peerInfo.AS,
+							PeerAddress: peerInfo.Address,
+							PeerID:      peerInfo.ID,
+							Timestamp:   path.GetTimestamp(),
+							Payload:     buf,
+							PostPolicy:  true,
+						})
+					}
+					eor := bgp.NewEndOfRib(rf)
+					eorBuf, _ := eor.Serialize()
+					w.notify(&WatchEventUpdate{
+						Message:     eor,
+						PeerAS:      peerInfo.AS,
+						PeerAddress: peerInfo.Address,
+						PeerID:      peerInfo.ID,
+						Timestamp:   time.Now(),
+						Payload:     eorBuf,
+						PostPolicy:  true,
+					})
+				}
 			}
-
 		}
 
 		go w.loop()
