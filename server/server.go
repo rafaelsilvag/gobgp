@@ -367,7 +367,7 @@ func filterpath(peer *Peer, path, old *table.Path) *table.Path {
 		}
 
 		if ignore {
-			if old != nil {
+			if path.IsWithdraw == false && old != nil {
 				// we advertise a route from ebgp,
 				// which is the old best. We got the
 				// new best from ibgp. We don't
@@ -400,7 +400,7 @@ func filterpath(peer *Peer, path, old *table.Path) *table.Path {
 			// the withdrawal path.
 			// Thing is same when peer A and we advertized prefix P (as local
 			// route), then, we withdraws the prefix.
-			if old != nil {
+			if path.IsWithdraw == false && old != nil {
 				return old.Clone(true)
 			}
 		}
@@ -981,7 +981,7 @@ func (s *BgpServer) StartZebraClient(c *config.ZebraConfig) error {
 			protos = append(protos, string(p))
 		}
 		var err error
-		s.zclient, err = newZebraClient(s, c.Url, protos, c.Version)
+		s.zclient, err = newZebraClient(s, c.Url, protos, c.Version, c.NexthopTriggerEnable, c.NexthopTriggerDelay)
 		return err
 	}, false)
 }
@@ -1181,6 +1181,18 @@ func (s *BgpServer) DeletePath(uuid []byte, f bgp.RouteFamily, vrfId string, pat
 		s.propagateUpdate(nil, deletePathList)
 		return nil
 	}, true)
+}
+
+func (s *BgpServer) UpdatePath(vrfId string, pathList []*table.Path) error {
+	err := s.mgmtOperation(func() error {
+		if err := s.fixupApiPath(vrfId, pathList); err != nil {
+			return err
+		}
+
+		s.propagateUpdate(nil, pathList)
+		return nil
+	}, true)
+	return err
 }
 
 func (s *BgpServer) Start(c *config.Global) error {

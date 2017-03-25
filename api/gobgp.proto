@@ -304,6 +304,8 @@ message EnableZebraRequest {
   string url = 1;
   repeated string route_types = 2;
   uint32 version = 3;
+  bool nexthop_trigger_enable = 4;
+  uint32 nexthop_trigger_delay = 5;
 }
 
 message EnableZebraResponse {
@@ -504,6 +506,7 @@ message Path {
   bool is_from_external = 13;
   string neighbor_ip = 14;
   bytes uuid = 15; // only paths installed by AddPath API have this
+  bool is_nexthop_invalid = 16;
 }
 
 message Destination {

@@ -258,6 +258,7 @@ func ToPathApi(path *table.Path) *Path {
 		IsFromExternal:     path.IsFromExternal(),
 		NoImplicitWithdraw: path.NoImplicitWithdraw(),
 		Uuid:               path.UUID().Bytes(),
+		IsNexthopInvalid:   path.IsNexthopInvalid,
 	}
 	if s := path.GetSource(); s != nil {
 		p.SourceAsn = s.AS
@@ -776,6 +777,8 @@ func (s *Server) EnableZebra(ctx context.Context, arg *EnableZebraRequest) (*Ena
 		Url: arg.Url,
 		RedistributeRouteTypeList: l,
 		Version:                   uint8(arg.Version),
+		NexthopTriggerEnable:      arg.NexthopTriggerEnable,
+		NexthopTriggerDelay:       uint8(arg.NexthopTriggerDelay),
 	})
 }
 
@@ -998,12 +1001,12 @@ func (s *Server) DeleteNeighbor(ctx context.Context, arg *DeleteNeighborRequest)
 }
 
 func NewPrefixFromApiStruct(a *Prefix) (*table.Prefix, error) {
-	addr, prefix, err := net.ParseCIDR(a.IpPrefix)
+	_, prefix, err := net.ParseCIDR(a.IpPrefix)
 	if err != nil {
 		return nil, err
 	}
 	rf := bgp.RF_IPv4_UC
-	if addr.To4() == nil {
+	if strings.Contains(a.IpPrefix, ":") {
 		rf = bgp.RF_IPv6_UC
 	}
 	return &table.Prefix{

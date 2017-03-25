@@ -88,6 +88,8 @@ type Path struct {
 	dels       []bgp.BGPAttrType
 	filtered   map[string]PolicyDirection
 	VrfIds     []uint16
+	// For BGP Nexthop Tracking, this field shows if nexthop is invalidated by IGP.
+	IsNexthopInvalid bool
 }
 
 func NewPath(source *PeerInfo, nlri bgp.AddrPrefixInterface, isWithdraw bool, pattrs []bgp.PathAttributeInterface, timestamp time.Time, noImplicitWithdraw bool) *Path {
@@ -276,9 +278,10 @@ func (path *Path) IsIBGP() bool {
 // create new PathAttributes
 func (path *Path) Clone(isWithdraw bool) *Path {
 	return &Path{
-		parent:     path,
-		IsWithdraw: isWithdraw,
-		filtered:   make(map[string]PolicyDirection),
+		parent:           path,
+		IsWithdraw:       isWithdraw,
+		filtered:         make(map[string]PolicyDirection),
+		IsNexthopInvalid: path.IsNexthopInvalid,
 	}
 }
 
@@ -515,6 +518,9 @@ func (path *Path) String() string {
 	s.WriteString(fmt.Sprintf("{ %s | ", path.getPrefix()))
 	s.WriteString(fmt.Sprintf("src: %s", path.GetSource()))
 	s.WriteString(fmt.Sprintf(", nh: %s", path.GetNexthop()))
+	if path.IsNexthopInvalid {
+		s.WriteString(" (not reachable)")
+	}
 	if path.IsWithdraw {
 		s.WriteString(", withdraw")
 	}
@@ -1012,6 +1018,7 @@ func (p *Path) ToGlobal(vrf *Vrf) *Path {
 	path.SetExtCommunities(vrf.ExportRt, false)
 	path.delPathAttr(bgp.BGP_ATTR_TYPE_NEXT_HOP)
 	path.setPathAttr(bgp.NewPathAttributeMpReachNLRI(nh.String(), []bgp.AddrPrefixInterface{nlri}))
+	path.IsNexthopInvalid = p.IsNexthopInvalid
 	return path
 }
 
@@ -1039,5 +1046,6 @@ func (p *Path) ToLocal() *Path {
 		path.delPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 		path.setPathAttr(bgp.NewPathAttributeNextHop(nh.String()))
 	}
+	path.IsNexthopInvalid = p.IsNexthopInvalid
 	return path
 }
