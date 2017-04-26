@@ -50,6 +50,9 @@ func getNeighbors(vrf string) (neighbors, error) {
 }
 
 func getNeighbor(name string, enableAdvertised bool) (*config.Neighbor, error) {
+	if net.ParseIP(name) == nil {
+		name = ""
+	}
 	return client.GetNeighbor(name, enableAdvertised)
 }
 
@@ -269,7 +272,7 @@ func showNeighbor(args []string) error {
 					fmt.Printf("        Local: %s", s)
 				}
 			}
-			if m := lookup(c, p.State.LocalCapabilityList); m != nil {
+			if m := lookup(c, p.State.RemoteCapabilityList); m != nil {
 				g := m.(*bgp.CapGracefulRestart)
 				if s := grStr(g); len(s) > 0 {
 					fmt.Printf("        Remote: %s", s)
@@ -294,7 +297,7 @@ func showNeighbor(args []string) error {
 					fmt.Printf("        Local:\n%s", s)
 				}
 			}
-			if m := lookup(c, p.State.LocalCapabilityList); m != nil {
+			if m := lookup(c, p.State.RemoteCapabilityList); m != nil {
 				g := m.(*bgp.CapLongLivedGracefulRestart)
 				if s := grStr(g); len(s) > 0 {
 					fmt.Printf("        Remote:\n%s", s)
@@ -325,7 +328,7 @@ func showNeighbor(args []string) error {
 					fmt.Printf("        Local:  %s\n", s)
 				}
 			}
-			if m := lookup(c, p.State.LocalCapabilityList); m != nil {
+			if m := lookup(c, p.State.RemoteCapabilityList); m != nil {
 				e := m.(*bgp.CapExtendedNexthop)
 				if s := exnhStr(e); len(s) > 0 {
 					fmt.Printf("        Remote: %s\n", s)
@@ -341,7 +344,7 @@ func showNeighbor(args []string) error {
 	fmt.Printf("    Notifications: %10d %10d\n", p.State.Messages.Sent.Notification, p.State.Messages.Received.Notification)
 	fmt.Printf("    Updates:       %10d %10d\n", p.State.Messages.Sent.Update, p.State.Messages.Received.Update)
 	fmt.Printf("    Keepalives:    %10d %10d\n", p.State.Messages.Sent.Keepalive, p.State.Messages.Received.Keepalive)
-	fmt.Printf("    Route Refesh:  %10d %10d\n", p.State.Messages.Sent.Refresh, p.State.Messages.Received.Refresh)
+	fmt.Printf("    Route Refresh: %10d %10d\n", p.State.Messages.Sent.Refresh, p.State.Messages.Received.Refresh)
 	fmt.Printf("    Discarded:     %10d %10d\n", p.State.Messages.Sent.Discarded, p.State.Messages.Received.Discarded)
 	fmt.Printf("    Total:         %10d %10d\n", p.State.Messages.Sent.Total, p.State.Messages.Received.Total)
 	fmt.Print("  Route statistics:\n")
