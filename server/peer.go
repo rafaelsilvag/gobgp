@@ -271,8 +271,7 @@ func (peer *Peer) filterpath(path, old *table.Path) *table.Path {
 		return nil
 	}
 
-	path = path.Clone(path.IsWithdraw)
-	path.UpdatePathAttrs(peer.fsm.gConf, peer.fsm.pConf, peer.fsm.peerInfo)
+	path = table.UpdatePathAttrs(peer.fsm.gConf, peer.fsm.pConf, peer.fsm.peerInfo, path)
 
 	options := &table.PolicyOptions{
 		Info: peer.fsm.peerInfo,
@@ -533,7 +532,6 @@ func (peer *Peer) ToConfig(getAdvertised bool) *config.Neighbor {
 	conf.State.RemoteCapabilityList = remoteCap
 	conf.State.LocalCapabilityList = capabilitiesFromConfig(peer.fsm.pConf)
 
-	conf.State.RemoteRouterId = peer.fsm.peerInfo.ID.To4().String()
 	conf.State.SessionState = config.IntToSessionStateMap[int(peer.fsm.state)]
 	conf.State.AdminState = config.IntToAdminStateMap[int(peer.fsm.adminState)]
 
@@ -553,6 +551,7 @@ func (peer *Peer) ToConfig(getAdvertised bool) *config.Neighbor {
 		buf, _ := peer.fsm.recvOpen.Serialize()
 		// need to copy all values here
 		conf.State.ReceivedOpenMessage, _ = bgp.ParseBGPMessage(buf)
+		conf.State.RemoteRouterId = peer.fsm.peerInfo.ID.To4().String()
 	}
 	return &conf
 }
