@@ -188,6 +188,9 @@ func UpdatePathAttrs(global *config.Global, peer *config.Neighbor, info *PeerInf
 			path.SetNexthop(localAddress)
 		}
 
+		// remove-private-as handling
+		path.RemovePrivateAS(peer.Config.LocalAs, peer.State.RemovePrivateAs)
+
 		// AS_PATH handling
 		path.PrependAsn(peer.Config.LocalAs, 1)
 
@@ -215,7 +218,7 @@ func UpdatePathAttrs(global *config.Global, peer *config.Neighbor, info *PeerInf
 		// For iBGP peers we are required to send local-pref attribute
 		// for connected or local prefixes.
 		// We set default local-pref 100.
-		if pref := path.getPathAttr(bgp.BGP_ATTR_TYPE_LOCAL_PREF); pref == nil || !path.IsLocal() {
+		if pref := path.getPathAttr(bgp.BGP_ATTR_TYPE_LOCAL_PREF); pref == nil {
 			path.setPathAttr(bgp.NewPathAttributeLocalPref(DEFAULT_LOCAL_PREF))
 		}
 
@@ -675,6 +678,65 @@ func (path *Path) PrependAsn(asn uint32, repeat uint8) {
 		asPath.Value = append([]bgp.AsPathParamInterface{p}, asPath.Value...)
 	}
 	path.setPathAttr(asPath)
+}
+
+func isPrivateAS(as uint32) bool {
+	return (64512 <= as && as <= 65534) || (4200000000 <= as && as <= 4294967294)
+}
+
+func (path *Path) RemovePrivateAS(localAS uint32, option config.RemovePrivateAsOption) {
+	original := path.GetAsPath()
+	if original == nil {
+		return
+	}
+	switch option {
+	case config.REMOVE_PRIVATE_AS_OPTION_ALL, config.REMOVE_PRIVATE_AS_OPTION_REPLACE:
+		newASParams := make([]bgp.AsPathParamInterface, 0, len(original.Value))
+		for _, param := range original.Value {
+			asParam := param.(*bgp.As4PathParam)
+			newASParam := make([]uint32, 0, len(asParam.AS))
+			for _, as := range asParam.AS {
+				if isPrivateAS(as) {
+					if option == config.REMOVE_PRIVATE_AS_OPTION_REPLACE {
+						newASParam = append(newASParam, localAS)
+					}
+				} else {
+					newASParam = append(newASParam, as)
+				}
+			}
+			if len(newASParam) > 0 {
+				newASParams = append(newASParams, bgp.NewAs4PathParam(asParam.Type, newASParam))
+			}
+		}
+		path.setPathAttr(bgp.NewPathAttributeAsPath(newASParams))
+	}
+	return
+}
+
+func (path *Path) ReplaceAS(localAS, peerAS uint32) *Path {
+	original := path.GetAsPath()
+	if original == nil {
+		return path
+	}
+	newASParams := make([]bgp.AsPathParamInterface, 0, len(original.Value))
+	changed := false
+	for _, param := range original.Value {
+		asParam := param.(*bgp.As4PathParam)
+		newASParam := make([]uint32, 0, len(asParam.AS))
+		for _, as := range asParam.AS {
+			if as == peerAS {
+				as = localAS
+				changed = true
+			}
+			newASParam = append(newASParam, as)
+		}
+		newASParams = append(newASParams, bgp.NewAs4PathParam(asParam.Type, newASParam))
+	}
+	if changed {
+		path = path.Clone(path.IsWithdraw)
+		path.setPathAttr(bgp.NewPathAttributeAsPath(newASParams))
+	}
+	return path
 }
 
 func (path *Path) GetCommunities() []uint32 {
