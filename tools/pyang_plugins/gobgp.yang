@@ -46,11 +46,15 @@ module gobgp {
       }
       enum BOTH {
         value 2;
-        description "send both pre and post-policy routes";
+        description "!OBSOLETED! send both pre and post-policy routes";
       }
       enum LOCAL-RIB {
         value 3;
         description "send local rib routes";
+      }
+      enum ALL {
+        value 4;
+        description "send pre-policy, post-policy, and local rib routes";
       }
     }
   }
@@ -195,6 +199,10 @@ module gobgp {
   grouping gobgp-adjacent-table {
     container adj-table {
       leaf ADVERTISED {
+        type uint32;
+      }
+
+      leaf FILTERED {
         type uint32;
       }
 
@@ -548,6 +556,11 @@ module gobgp {
     leaf route-monitoring-policy {
       type bmp-route-monitoring-policy-type;
       default PRE-POLICY;
+    }
+    leaf statistics-timeout {
+      type uint16;
+      description
+        "Interval seconds of statistics messages sent to BMP server";
     }
   }
 
