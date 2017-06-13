@@ -17,11 +17,11 @@ package server
 
 import (
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/eapache/channels"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/table"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"time"
 )
@@ -30,6 +30,26 @@ const (
 	FLOP_THRESHOLD    = time.Second * 30
 	MIN_CONNECT_RETRY = 10
 )
+
+type PeerGroup struct {
+	Conf    *config.PeerGroup
+	members map[string]config.Neighbor
+}
+
+func NewPeerGroup(c *config.PeerGroup) *PeerGroup {
+	return &PeerGroup{
+		Conf:    c,
+		members: make(map[string]config.Neighbor, 0),
+	}
+}
+
+func (pg *PeerGroup) AddMember(c config.Neighbor) {
+	pg.members[c.Config.NeighborAddress] = c
+}
+
+func (pg *PeerGroup) DeleteMember(c config.Neighbor) {
+	delete(pg.members, c.Config.NeighborAddress)
+}
 
 type Peer struct {
 	tableId           string
