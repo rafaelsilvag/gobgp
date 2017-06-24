@@ -65,6 +65,7 @@
         passive-mode = true
         local-address = "192.168.10.1"
         remote-port = 2016
+        ttl = 64  # default value on Linux
     [neighbors.ebgp-multihop.config]
         enabled = true
         multihop-ttl = 100
@@ -131,6 +132,12 @@
         default-in-policy = "reject-route"
     [neighbors.route-server.config]
         route-server-client = true
+    # To enable TTL Security, uncomment the following.
+    # Please note that this feature is mututally exclusive with
+    # "neighbors.ebgp-multihop.config".
+    #[neighbors.ttl-security.config]
+    #    enabled = true
+    #    ttl-min = 255  # 255 means directly connected
 
 [[peer-groups]]
   [peer-groups.config]
