@@ -59,6 +59,8 @@ If you want to remove routes with the address of the ipv6 from global rib：
 ```shell
 % gobgp global rib add -a ipv4 10.0.0.0/24 origin igp
 % gobgp global rib add -a ipv4 10.0.0.0/24 origin egp
+% gobgp global rib add -a ipv4 10.0.0.0/24 aspath 10,20,100.100
+% gobgp global rib add -a ipv4 10.0.0.0/24 aspath "10 20 {30,40} 50"
 % gobgp global rib add -a ipv4 10.0.0.0/24 nexthop 20.20.20.20
 % gobgp global rib add -a ipv4 10.0.0.0/24 med 10
 % gobgp global rib add -a ipv4 10.0.0.0/24 local-pref 110
@@ -69,6 +71,7 @@ If you want to remove routes with the address of the ipv6 from global rib：
 % gobgp global rib add -a ipv4 10.0.0.0/24 aigp metric 200
 % gobgp global rib add -a ipv4 10.0.0.0/24 large-community 100:100:100
 % gobgp global rib add -a ipv4 10.0.0.0/24 large-community 100:100:100,200:200:200
+% gobgp global rib add -a ipv4 10.0.0.0/24 identifier 10
 % gobgp global rib add -a ipv4-mpls 10.0.0.0/24 100
 % gobgp global rib add -a ipv4-mpls 10.0.0.0/24 100/200
 % gobgp global rib add -a ipv4-mpls 10.0.0.0/24 100 nexthop 20.20.20.20
@@ -129,6 +132,8 @@ The following options can be specified in the global subcommand:
 % gobgp neighbor <neighbor address> [local|adj-in|adj-out] [<prefix>|<host>] [longer-prefixes|shorter-prefixes] [-a <address family>]
 # show table summary
 % gobgp neighbor <neighbor address> [local|adj-in|adj-out] summary [-a <address family>]
+# show RPKI detailed information in adj-in table
+% gobgp neighbor <neighbor address> adj-in <prefix> validation
 ```
 
 #### - example

@@ -75,9 +75,8 @@ func getIPv6LinkLocalAddress(ifname string) (string, error) {
 		return "", err
 	}
 	for _, addr := range addrs {
-		if ip, _, err := net.ParseCIDR(addr.String()); err != nil {
-			return "", err
-		} else if ip.To4() == nil && ip.IsLinkLocalUnicast() {
+		ip := addr.(*net.IPNet).IP
+		if ip.To4() == nil && ip.IsLinkLocalUnicast() {
 			return fmt.Sprintf("%s%%%s", ip.String(), ifname), nil
 		}
 	}
@@ -107,12 +106,18 @@ func SetDefaultNeighborConfigValues(n *Neighbor, asn uint32) error {
 
 func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn uint32) error {
 	if v == nil {
+		// Determines this function is called against the same Neighbor struct,
+		// and if already called, returns immediately.
+		if n.State.LocalAs != 0 {
+			return nil
+		}
 		v = viper.New()
 	}
 
 	if n.Config.LocalAs == 0 {
 		n.Config.LocalAs = asn
 	}
+	n.State.LocalAs = n.Config.LocalAs
 
 	if n.Config.PeerAs != n.Config.LocalAs {
 		n.Config.PeerType = PEER_TYPE_EXTERNAL
@@ -200,17 +205,19 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn ui
 		if err != nil {
 			return err
 		}
-		for i, af := range n.AfiSafis {
+		for i := range n.AfiSafis {
 			vv := viper.New()
 			if len(afs) > i {
 				vv.Set("afi-safi", afs[i])
 			}
-			af.State.AfiSafiName = af.Config.AfiSafiName
-			if !vv.IsSet("afi-safi.config") {
-				af.Config.Enabled = true
+			if _, err := bgp.GetRouteFamily(string(n.AfiSafis[i].Config.AfiSafiName)); err != nil {
+				return err
 			}
-			af.MpGracefulRestart.State.Enabled = af.MpGracefulRestart.Config.Enabled
-			n.AfiSafis[i] = af
+			n.AfiSafis[i].State.AfiSafiName = n.AfiSafis[i].Config.AfiSafiName
+			if !vv.IsSet("afi-safi.config.enabled") {
+				n.AfiSafis[i].Config.Enabled = true
+			}
+			n.AfiSafis[i].MpGracefulRestart.State.Enabled = n.AfiSafis[i].MpGracefulRestart.Config.Enabled
 		}
 	}
 
@@ -330,6 +337,9 @@ func setDefaultConfigValuesWithViper(v *viper.Viper, b *BgpConfigSet) error {
 	for idx, server := range b.BmpServers {
 		if server.Config.Port == 0 {
 			server.Config.Port = bmp.BMP_DEFAULT_PORT
+		}
+		if server.Config.RouteMonitoringPolicy == "" {
+			server.Config.RouteMonitoringPolicy = BMP_ROUTE_MONITORING_POLICY_TYPE_PRE_POLICY
 		}
 		// statistics-timeout is uint16 value and implicitly less than 65536
 		if server.Config.StatisticsTimeout != 0 && server.Config.StatisticsTimeout < 15 {
