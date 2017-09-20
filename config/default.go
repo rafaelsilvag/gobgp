@@ -38,6 +38,7 @@ func defaultAfiSafi(typ AfiSafiType, enable bool) AfiSafi {
 		},
 		State: AfiSafiState{
 			AfiSafiName: typ,
+			Family:      bgp.AddressFamilyValueMap[string(typ)],
 		},
 	}
 }
@@ -210,8 +211,10 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn ui
 			if len(afs) > i {
 				vv.Set("afi-safi", afs[i])
 			}
-			if _, err := bgp.GetRouteFamily(string(n.AfiSafis[i].Config.AfiSafiName)); err != nil {
+			if rf, err := bgp.GetRouteFamily(string(n.AfiSafis[i].Config.AfiSafiName)); err != nil {
 				return err
+			} else {
+				n.AfiSafis[i].State.Family = rf
 			}
 			n.AfiSafis[i].State.AfiSafiName = n.AfiSafis[i].Config.AfiSafiName
 			if !vv.IsSet("afi-safi.config.enabled") {
@@ -240,8 +243,17 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn ui
 		}
 	}
 
-	if n.EbgpMultihop.Config.Enabled && n.TtlSecurity.Config.Enabled {
-		return fmt.Errorf("ebgp-multihop and ttl-security are mututally exclusive")
+	if n.EbgpMultihop.Config.Enabled {
+		if n.TtlSecurity.Config.Enabled {
+			return fmt.Errorf("ebgp-multihop and ttl-security are mututally exclusive")
+		}
+		if n.EbgpMultihop.Config.MultihopTtl == 0 {
+			n.EbgpMultihop.Config.MultihopTtl = 255
+		}
+	} else if n.TtlSecurity.Config.Enabled {
+		if n.TtlSecurity.Config.TtlMin == 0 {
+			n.TtlSecurity.Config.TtlMin = 255
+		}
 	}
 
 	return nil

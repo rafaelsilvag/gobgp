@@ -31,14 +31,17 @@ const (
 	INTERFACE_NAMSIZ = 20
 )
 
+// Internal Interface Status.
 type INTERFACE_STATUS uint8
 
 const (
-	INTERFACE_ACTIVE        = 0x01
-	INTERFACE_SUB           = 0x02
-	INTERFACE_LINKDETECTION = 0x04
+	INTERFACE_ACTIVE        INTERFACE_STATUS = 0x01
+	INTERFACE_SUB           INTERFACE_STATUS = 0x02
+	INTERFACE_LINKDETECTION INTERFACE_STATUS = 0x04
 )
 
+// Interface Link Layer Types.
+//go:generate stringer -type=LINK_TYPE
 type LINK_TYPE uint32
 
 const (
@@ -120,6 +123,7 @@ func (t INTERFACE_STATUS) String() string {
 }
 
 // Subsequent Address Family Identifier.
+//go:generate stringer -type=SAFI
 type SAFI uint8
 
 const (
@@ -132,6 +136,7 @@ const (
 )
 
 // API Types.
+//go:generate stringer -type=API_TYPE
 type API_TYPE uint16
 
 const (
@@ -169,6 +174,7 @@ const (
 )
 
 // Route Types.
+//go:generate stringer -type=ROUTE_TYPE
 type ROUTE_TYPE uint8
 
 const (
@@ -182,6 +188,7 @@ const (
 	ROUTE_OSPF6
 	ROUTE_ISIS
 	ROUTE_BGP
+	ROUTE_PIM
 	ROUTE_HSLS
 	ROUTE_OLSR
 	ROUTE_BABEL
@@ -199,6 +206,7 @@ var routeTypeValueMap = map[string]ROUTE_TYPE{
 	"ospf3":   ROUTE_OSPF6,
 	"isis":    ROUTE_ISIS,
 	"bgp":     ROUTE_BGP,
+	"pim":     ROUTE_PIM,
 	"hsls":    ROUTE_HSLS,
 	"olsr":    ROUTE_OLSR,
 	"babel":   ROUTE_BABEL,
@@ -212,13 +220,40 @@ func RouteTypeFromString(typ string) (ROUTE_TYPE, error) {
 	return t, fmt.Errorf("unknown route type: %s", typ)
 }
 
+// API Message Flags.
+type MESSAGE_FLAG uint8
+
 const (
-	MESSAGE_NEXTHOP  = 0x01
-	MESSAGE_IFINDEX  = 0x02
-	MESSAGE_DISTANCE = 0x04
-	MESSAGE_METRIC   = 0x08
-	MESSAGE_MTU      = 0x10
+	MESSAGE_NEXTHOP  MESSAGE_FLAG = 0x01
+	MESSAGE_IFINDEX  MESSAGE_FLAG = 0x02
+	MESSAGE_DISTANCE MESSAGE_FLAG = 0x04
+	MESSAGE_METRIC   MESSAGE_FLAG = 0x08
+	MESSAGE_MTU      MESSAGE_FLAG = 0x10
+	MESSAGE_TAG      MESSAGE_FLAG = 0x20
 )
+
+func (t MESSAGE_FLAG) String() string {
+	var ss []string
+	if t&MESSAGE_NEXTHOP > 0 {
+		ss = append(ss, "NEXTHOP")
+	}
+	if t&MESSAGE_IFINDEX > 0 {
+		ss = append(ss, "IFINDEX")
+	}
+	if t&MESSAGE_DISTANCE > 0 {
+		ss = append(ss, "DISTANCE")
+	}
+	if t&MESSAGE_METRIC > 0 {
+		ss = append(ss, "METRIC")
+	}
+	if t&MESSAGE_MTU > 0 {
+		ss = append(ss, "MTU")
+	}
+	if t&MESSAGE_TAG > 0 {
+		ss = append(ss, "TAG")
+	}
+	return strings.Join(ss, "|")
+}
 
 // Message Flags
 type FLAG uint64
@@ -264,6 +299,7 @@ func (t FLAG) String() string {
 }
 
 // Nexthop Flags.
+//go:generate stringer -type=NEXTHOP_FLAG
 type NEXTHOP_FLAG uint8
 
 const (
@@ -542,6 +578,23 @@ type Body interface {
 	String() string
 }
 
+type UnknownBody struct {
+	Data []byte
+}
+
+func (b *UnknownBody) DecodeFromBytes(data []byte, version uint8) error {
+	b.Data = data
+	return nil
+}
+
+func (b *UnknownBody) Serialize() ([]byte, error) {
+	return b.Data, nil
+}
+
+func (b *UnknownBody) String() string {
+	return fmt.Sprintf("data: %v", b.Data)
+}
+
 type HelloBody struct {
 	RedistDefault ROUTE_TYPE
 }
@@ -594,7 +647,7 @@ func (b *InterfaceUpdateBody) DecodeFromBytes(data []byte, version uint8) error 
 		return fmt.Errorf("lack of bytes. need %d but %d", INTERFACE_NAMSIZ+29, len(data))
 	}
 
-	b.Name = string(data[:INTERFACE_NAMSIZ])
+	b.Name = strings.Trim(string(data[:INTERFACE_NAMSIZ]), "\u0000")
 	data = data[INTERFACE_NAMSIZ:]
 	b.Index = binary.BigEndian.Uint32(data[:4])
 	b.Status = INTERFACE_STATUS(data[4])
@@ -631,10 +684,11 @@ func (b *InterfaceUpdateBody) String() string {
 }
 
 type InterfaceAddressUpdateBody struct {
-	Index  uint32
-	Flags  uint8
-	Prefix net.IP
-	Length uint8
+	Index       uint32
+	Flags       uint8
+	Prefix      net.IP
+	Length      uint8
+	Destination net.IP
 }
 
 func (b *InterfaceAddressUpdateBody) DecodeFromBytes(data []byte, version uint8) error {
@@ -652,6 +706,7 @@ func (b *InterfaceAddressUpdateBody) DecodeFromBytes(data []byte, version uint8)
 	}
 	b.Prefix = data[6 : 6+addrlen]
 	b.Length = data[6+addrlen]
+	b.Destination = data[7+addrlen : 7+addrlen*2]
 	return nil
 }
 
@@ -695,7 +750,7 @@ func (b *RouterIDUpdateBody) String() string {
 type IPRouteBody struct {
 	Type         ROUTE_TYPE
 	Flags        FLAG
-	Message      uint8
+	Message      MESSAGE_FLAG
 	SAFI         SAFI
 	Prefix       net.IP
 	PrefixLength uint8
@@ -711,7 +766,7 @@ func (b *IPRouteBody) Serialize() ([]byte, error) {
 	buf := make([]byte, 5)
 	buf[0] = uint8(b.Type)
 	buf[1] = uint8(b.Flags)
-	buf[2] = b.Message
+	buf[2] = uint8(b.Message)
 	binary.BigEndian.PutUint16(buf[3:], uint16(b.SAFI))
 	bitlen := b.PrefixLength
 	bytelen := (int(b.PrefixLength) + 7) / 8
@@ -776,7 +831,7 @@ func (b *IPRouteBody) DecodeFromBytes(data []byte, version uint8) error {
 
 	b.Type = ROUTE_TYPE(data[0])
 	b.Flags = FLAG(data[1])
-	b.Message = data[2]
+	b.Message = MESSAGE_FLAG(data[2])
 	b.PrefixLength = data[3]
 	b.SAFI = SAFI(SAFI_UNICAST)
 
@@ -1338,7 +1393,10 @@ func ParseMessage(hdr *Header, data []byte) (*Message, error) {
 			"Topic": "Zebra",
 		}).Debugf("nexthop update message received: %v", data)
 	default:
-		return nil, fmt.Errorf("Unknown zapi command: %d", m.Header.Command)
+		m.Body = &UnknownBody{}
+		log.WithFields(log.Fields{
+			"Topic": "Zebra",
+		}).Debugf("unknown message received: %v", data)
 	}
 	err := m.Body.DecodeFromBytes(data, m.Header.Version)
 	if err != nil {
