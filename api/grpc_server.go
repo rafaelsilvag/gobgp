@@ -195,6 +195,15 @@ func NewLongLivedGracefulRestartFromConfigStruct(c *config.LongLivedGracefulRest
 	}
 }
 
+func NewAddPathsFromConfigStruct(c *config.AddPaths) *AddPaths {
+	return &AddPaths{
+		Config: &AddPathsConfig{
+			Receive: c.Config.Receive,
+			SendMax: uint32(c.Config.SendMax),
+		},
+	}
+}
+
 func NewAfiSafiFromConfigStruct(c *config.AfiSafi) *AfiSafi {
 	return &AfiSafi{
 		MpGracefulRestart:        NewMpGracefulRestartFromConfigStruct(&c.MpGracefulRestart),
@@ -205,6 +214,7 @@ func NewAfiSafiFromConfigStruct(c *config.AfiSafi) *AfiSafi {
 		PrefixLimits:             NewPrefixLimitFromConfigStruct(c),
 		RouteTargetMembership:    NewRouteTargetMembershipFromConfigStruct(&c.RouteTargetMembership),
 		LongLivedGracefulRestart: NewLongLivedGracefulRestartFromConfigStruct(&c.LongLivedGracefulRestart),
+		AddPaths:                 NewAddPathsFromConfigStruct(&c.AddPaths),
 	}
 }
 
@@ -330,6 +340,7 @@ func NewPeerFromConfigStruct(pconf *config.Neighbor) *Peer {
 			LocalAddress: pconf.Transport.Config.LocalAddress,
 		},
 		AfiSafis: afiSafis,
+		AddPaths: NewAddPathsFromConfigStruct(&pconf.AddPaths),
 	}
 }
 
@@ -464,6 +475,58 @@ func (s *Server) GetRib(ctx context.Context, arg *GetRibRequest) (*GetRibRespons
 		Family:       uint32(tbl.GetRoutefamily()),
 		Destinations: dsts},
 	}, err
+}
+
+func (s *Server) GetPath(arg *GetPathRequest, stream GobgpApi_GetPathServer) error {
+	f := func() []*table.LookupPrefix {
+		l := make([]*table.LookupPrefix, 0, len(arg.Prefixes))
+		for _, p := range arg.Prefixes {
+			l = append(l, &table.LookupPrefix{
+				Prefix:       p.Prefix,
+				LookupOption: table.LookupOption(p.LookupOption),
+			})
+		}
+		return l
+	}
+
+	in := false
+	family := bgp.RouteFamily(arg.Family)
+	var tbl *table.Table
+	var err error
+	switch arg.Type {
+	case Resource_LOCAL, Resource_GLOBAL:
+		tbl, err = s.bgpServer.GetRib(arg.Name, family, f())
+	case Resource_ADJ_IN:
+		in = true
+		fallthrough
+	case Resource_ADJ_OUT:
+		tbl, err = s.bgpServer.GetAdjRib(arg.Name, family, in, f())
+	case Resource_VRF:
+		tbl, err = s.bgpServer.GetVrfRib(arg.Name, family, []*table.LookupPrefix{})
+	default:
+		return fmt.Errorf("unsupported resource type: %v", arg.Type)
+	}
+	if err != nil {
+		return err
+	}
+
+	return func() error {
+		for _, dst := range tbl.GetDestinations() {
+			for idx, path := range dst.GetAllKnownPathList() {
+				p := ToPathApi(path)
+				if idx == 0 {
+					switch arg.Type {
+					case Resource_LOCAL, Resource_GLOBAL:
+						p.Best = true
+					}
+				}
+				if err := stream.Send(p); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}()
 }
 
 func (s *Server) MonitorRib(arg *MonitorRibRequest, stream GobgpApi_MonitorRibServer) error {
@@ -1061,6 +1124,16 @@ func ReadLongLivedGracefulRestartFromAPIStruct(c *config.LongLivedGracefulRestar
 	}
 }
 
+func ReadAddPathsFromAPIStruct(c *config.AddPaths, a *AddPaths) {
+	if c == nil || a == nil {
+		return
+	}
+	if a.Config != nil {
+		c.Config.Receive = a.Config.Receive
+		c.Config.SendMax = uint8(a.Config.SendMax)
+	}
+}
+
 func NewNeighborFromAPIStruct(a *Peer) (*config.Neighbor, error) {
 	pconf := &config.Neighbor{}
 	if a.Conf != nil {
@@ -1130,6 +1203,7 @@ func NewNeighborFromAPIStruct(a *Peer) (*config.Neighbor, error) {
 					ReadPrefixLimitFromAPIStruct(&afiSafi.PrefixLimit, a.PrefixLimits)
 					ReadRouteTargetMembershipFromAPIStruct(&afiSafi.RouteTargetMembership, a.RouteTargetMembership)
 					ReadLongLivedGracefulRestartFromAPIStruct(&afiSafi.LongLivedGracefulRestart, a.LongLivedGracefulRestart)
+					ReadAddPathsFromAPIStruct(&afiSafi.AddPaths, a.AddPaths)
 				}
 			}
 			pconf.AfiSafis = append(pconf.AfiSafis, afiSafi)
@@ -1206,6 +1280,7 @@ func NewNeighborFromAPIStruct(a *Peer) (*config.Neighbor, error) {
 			}
 		}
 	}
+	ReadAddPathsFromAPIStruct(&pconf.AddPaths, a.AddPaths)
 	return pconf, nil
 }
 

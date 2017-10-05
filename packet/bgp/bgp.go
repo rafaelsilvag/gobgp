@@ -7817,6 +7817,7 @@ type BGPUpdate struct {
 }
 
 func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
+	var strongestError error
 
 	// cache error codes
 	eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
@@ -7870,20 +7871,46 @@ func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption
 
 	msg.PathAttributes = []PathAttributeInterface{}
 	for pathlen := msg.TotalPathAttributeLen; pathlen > 0; {
+		var e error
+		if pathlen < 3 {
+			e = NewMessageErrorWithErrorHandling(
+				eCode, BGP_ERROR_SUB_ATTRIBUTE_LENGTH_ERROR, data, ERROR_HANDLING_TREAT_AS_WITHDRAW, nil, "insufficient data to decode")
+			if e.(*MessageError).Stronger(strongestError) {
+				strongestError = e
+			}
+			data = data[pathlen:]
+			break
+		}
 		p, err := GetPathAttribute(data)
 		if err != nil {
 			return err
 		}
+
 		err = p.DecodeFromBytes(data, options...)
 		if err != nil {
-			return err
+			e = err.(*MessageError)
+			if e.(*MessageError).SubTypeCode == BGP_ERROR_SUB_ATTRIBUTE_FLAGS_ERROR {
+				e.(*MessageError).ErrorHandling = ERROR_HANDLING_TREAT_AS_WITHDRAW
+			} else {
+				e.(*MessageError).ErrorHandling = getErrorHandlingFromPathAttribute(p.GetType())
+				e.(*MessageError).ErrorAttribute = &p
+			}
+			if e.(*MessageError).Stronger(strongestError) {
+				strongestError = e
+			}
 		}
 		pathlen -= uint16(p.Len(options...))
 		if len(data) < p.Len(options...) {
-			return NewMessageError(eCode, BGP_ERROR_SUB_ATTRIBUTE_LENGTH_ERROR, data, "attribute length is short")
+			e = NewMessageErrorWithErrorHandling(
+				eCode, BGP_ERROR_SUB_ATTRIBUTE_LENGTH_ERROR, data, ERROR_HANDLING_TREAT_AS_WITHDRAW, nil, "attribute length is short")
+			if e.(*MessageError).Stronger(strongestError) {
+				strongestError = e
+			}
 		}
 		data = data[p.Len(options...):]
-		msg.PathAttributes = append(msg.PathAttributes, p)
+		if e == nil || e.(*MessageError).ErrorHandling != ERROR_HANDLING_ATTRIBUTE_DISCARD {
+			msg.PathAttributes = append(msg.PathAttributes, p)
+		}
 	}
 
 	msg.NLRI = make([]*IPAddrPrefix, 0)
@@ -7897,11 +7924,14 @@ func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption
 		if len(data) < n.Len(options...)+addpathLen {
 			return NewMessageError(eCode, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, nil, "NLRI length is short")
 		}
+		if n.Len(options...) > 32 {
+			return NewMessageError(eCode, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, nil, "NLRI length is too long")
+		}
 		data = data[n.Len(options...)+addpathLen:]
 		msg.NLRI = append(msg.NLRI, n)
 	}
 
-	return nil
+	return strongestError
 }
 
 func (msg *BGPUpdate) Serialize(options ...*MarshallingOption) ([]byte, error) {
@@ -7950,6 +7980,31 @@ func (msg *BGPUpdate) IsEndOfRib() (bool, RouteFamily) {
 		}
 	}
 	return false, RouteFamily(0)
+}
+
+func TreatAsWithdraw(msg *BGPUpdate) *BGPUpdate {
+	withdraw := &BGPUpdate{
+		WithdrawnRoutesLen:    0,
+		WithdrawnRoutes:       []*IPAddrPrefix{},
+		TotalPathAttributeLen: 0,
+		PathAttributes:        make([]PathAttributeInterface, 0, len(msg.PathAttributes)),
+		NLRI:                  []*IPAddrPrefix{},
+	}
+	withdraw.WithdrawnRoutes = append(msg.WithdrawnRoutes, msg.NLRI...)
+	var unreach []AddrPrefixInterface
+
+	for _, p := range msg.PathAttributes {
+		switch nlri := p.(type) {
+		case *PathAttributeMpReachNLRI:
+			unreach = append(unreach, nlri.Value...)
+		case *PathAttributeMpUnreachNLRI:
+			unreach = append(unreach, nlri.Value...)
+		}
+	}
+	if len(unreach) != 0 {
+		withdraw.PathAttributes = append(withdraw.PathAttributes, NewPathAttributeMpUnreachNLRI(unreach))
+	}
+	return withdraw
 }
 
 func NewBGPUpdateMessage(withdrawnRoutes []*IPAddrPrefix, pathattrs []PathAttributeInterface, nlri []*IPAddrPrefix) *BGPMessage {
@@ -8125,10 +8180,7 @@ func parseBody(h *BGPHeader, data []byte, options ...*MarshallingOption) (*BGPMe
 		return nil, NewMessageError(BGP_ERROR_MESSAGE_HEADER_ERROR, BGP_ERROR_SUB_BAD_MESSAGE_TYPE, nil, "unknown message type")
 	}
 	err := msg.Body.DecodeFromBytes(data, options...)
-	if err != nil {
-		return nil, err
-	}
-	return msg, nil
+	return msg, err
 }
 
 func ParseBGPMessage(data []byte, options ...*MarshallingOption) (*BGPMessage, error) {
@@ -8162,24 +8214,106 @@ func (msg *BGPMessage) Serialize(options ...*MarshallingOption) ([]byte, error) 
 	return append(h, b...), nil
 }
 
+type ErrorHandling int
+
+const (
+	ERROR_HANDLING_NONE ErrorHandling = iota
+	ERROR_HANDLING_ATTRIBUTE_DISCARD
+	ERROR_HANDLING_TREAT_AS_WITHDRAW
+	ERROR_HANDLING_AFISAFI_DISABLE
+	ERROR_HANDLING_SESSION_RESET
+)
+
+func getErrorHandlingFromPathAttribute(t BGPAttrType) ErrorHandling {
+	switch t {
+	case BGP_ATTR_TYPE_ORIGIN:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_AS_PATH:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_AS4_PATH:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_NEXT_HOP:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_MULTI_EXIT_DISC:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_LOCAL_PREF:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_ATOMIC_AGGREGATE:
+		return ERROR_HANDLING_ATTRIBUTE_DISCARD
+	case BGP_ATTR_TYPE_AGGREGATOR:
+		return ERROR_HANDLING_ATTRIBUTE_DISCARD
+	case BGP_ATTR_TYPE_AS4_AGGREGATOR:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_COMMUNITIES:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_ORIGINATOR_ID:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_CLUSTER_LIST:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_MP_REACH_NLRI:
+		return ERROR_HANDLING_AFISAFI_DISABLE
+	case BGP_ATTR_TYPE_MP_UNREACH_NLRI:
+		return ERROR_HANDLING_AFISAFI_DISABLE
+	case BGP_ATTR_TYPE_EXTENDED_COMMUNITIES:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_IP6_EXTENDED_COMMUNITIES:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_PMSI_TUNNEL:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_LARGE_COMMUNITY:
+		return ERROR_HANDLING_TREAT_AS_WITHDRAW
+	case BGP_ATTR_TYPE_TUNNEL_ENCAP:
+		return ERROR_HANDLING_ATTRIBUTE_DISCARD
+	case BGP_ATTR_TYPE_AIGP:
+		return ERROR_HANDLING_ATTRIBUTE_DISCARD
+	default:
+		return ERROR_HANDLING_ATTRIBUTE_DISCARD
+	}
+}
+
 type MessageError struct {
-	TypeCode    uint8
-	SubTypeCode uint8
-	Data        []byte
-	Message     string
+	TypeCode       uint8
+	SubTypeCode    uint8
+	Data           []byte
+	Message        string
+	ErrorHandling  ErrorHandling
+	ErrorAttribute *PathAttributeInterface
 }
 
 func NewMessageError(typeCode, subTypeCode uint8, data []byte, msg string) error {
 	return &MessageError{
-		TypeCode:    typeCode,
-		SubTypeCode: subTypeCode,
-		Data:        data,
-		Message:     msg,
+		TypeCode:       typeCode,
+		SubTypeCode:    subTypeCode,
+		Data:           data,
+		ErrorHandling:  ERROR_HANDLING_SESSION_RESET,
+		ErrorAttribute: nil,
+		Message:        msg,
+	}
+}
+
+func NewMessageErrorWithErrorHandling(typeCode, subTypeCode uint8, data []byte, errorHandling ErrorHandling, errorAttribute *PathAttributeInterface, msg string) error {
+	return &MessageError{
+		TypeCode:       typeCode,
+		SubTypeCode:    subTypeCode,
+		Data:           data,
+		ErrorHandling:  errorHandling,
+		ErrorAttribute: errorAttribute,
+		Message:        msg,
 	}
 }
 
 func (e *MessageError) Error() string {
 	return e.Message
+}
+
+func (e *MessageError) Stronger(err error) bool {
+	if err == nil {
+		return true
+	}
+	if msgErr, ok := err.(*MessageError); ok {
+		return e.ErrorHandling > msgErr.ErrorHandling
+	}
+	return false
 }
 
 func (e *TwoOctetAsSpecificExtended) Flat() map[string]string {

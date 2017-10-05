@@ -66,17 +66,16 @@ func (c AfiSafis) ToRfList() ([]bgp.RouteFamily, error) {
 }
 
 func CreateRfMap(p *Neighbor) map[bgp.RouteFamily]bgp.BGPAddPathMode {
-	rfs, _ := AfiSafis(p.AfiSafis).ToRfList()
-	mode := bgp.BGP_ADD_PATH_NONE
-	if p.AddPaths.Config.Receive {
-		mode |= bgp.BGP_ADD_PATH_RECEIVE
-	}
-	if p.AddPaths.Config.SendMax > 0 {
-		mode |= bgp.BGP_ADD_PATH_SEND
-	}
 	rfMap := make(map[bgp.RouteFamily]bgp.BGPAddPathMode)
-	for _, rf := range rfs {
-		rfMap[rf] = mode
+	for _, af := range p.AfiSafis {
+		mode := bgp.BGP_ADD_PATH_NONE
+		if af.AddPaths.State.Receive {
+			mode |= bgp.BGP_ADD_PATH_RECEIVE
+		}
+		if af.AddPaths.State.SendMax > 0 {
+			mode |= bgp.BGP_ADD_PATH_SEND
+		}
+		rfMap[af.State.Family] = mode
 	}
 	return rfMap
 }
@@ -153,4 +152,13 @@ func ExtractNeighborAddress(c *Neighbor) (string, error) {
 		}
 	}
 	return addr, nil
+}
+
+func (n *Neighbor) IsAddPathReceiveEnabled(family bgp.RouteFamily) bool {
+	for _, af := range n.AfiSafis {
+		if af.State.Family == family {
+			return af.AddPaths.State.Receive
+		}
+	}
+	return false
 }

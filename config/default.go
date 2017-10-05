@@ -143,6 +143,10 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn ui
 	n.State.PeerAs = n.Config.PeerAs
 	n.AsPathOptions.State.AllowOwnAs = n.AsPathOptions.Config.AllowOwnAs
 
+	if !v.IsSet("neighbor.error-handling.config.treat-as-withdraw") {
+		n.ErrorHandling.Config.TreatAsWithdraw = true
+	}
+
 	if !v.IsSet("neighbor.timers.config.connect-retry") && n.Timers.Config.ConnectRetry == 0 {
 		n.Timers.Config.ConnectRetry = float64(DEFAULT_CONNECT_RETRY)
 	}
@@ -201,6 +205,12 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn ui
 		} else {
 			n.AfiSafis = []AfiSafi{defaultAfiSafi(AFI_SAFI_TYPE_IPV6_UNICAST, true)}
 		}
+		for i := range n.AfiSafis {
+			n.AfiSafis[i].AddPaths.Config.Receive = n.AddPaths.Config.Receive
+			n.AfiSafis[i].AddPaths.State.Receive = n.AddPaths.Config.Receive
+			n.AfiSafis[i].AddPaths.Config.SendMax = n.AddPaths.Config.SendMax
+			n.AfiSafis[i].AddPaths.State.SendMax = n.AddPaths.Config.SendMax
+		}
 	} else {
 		afs, err := extractArray(v.Get("neighbor.afi-safis"))
 		if err != nil {
@@ -221,6 +231,14 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn ui
 				n.AfiSafis[i].Config.Enabled = true
 			}
 			n.AfiSafis[i].MpGracefulRestart.State.Enabled = n.AfiSafis[i].MpGracefulRestart.Config.Enabled
+			if !vv.IsSet("afi-safi.add-paths.config.receive") {
+				n.AfiSafis[i].AddPaths.Config.Receive = n.AddPaths.Config.Receive
+			}
+			n.AfiSafis[i].AddPaths.State.Receive = n.AfiSafis[i].AddPaths.Config.Receive
+			if !vv.IsSet("afi-safi.add-paths.config.send-max") {
+				n.AfiSafis[i].AddPaths.Config.SendMax = n.AddPaths.Config.SendMax
+			}
+			n.AfiSafis[i].AddPaths.State.SendMax = n.AfiSafis[i].AddPaths.Config.SendMax
 		}
 	}
 
