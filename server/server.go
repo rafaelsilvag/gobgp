@@ -72,7 +72,7 @@ func NewTCPListener(address string, port uint32, ch chan *net.TCPConn) (*TCPList
 		log.WithFields(log.Fields{
 			"Topic": "Peer",
 			"Key":   addr,
-		}).Warnf("cannot set TTL(=%d) for TCPLisnter: %s", 255, err)
+		}).Warnf("cannot set TTL(=%d) for TCPListener: %s", 255, err)
 	}
 
 	closeCh := make(chan struct{})
@@ -494,6 +494,33 @@ func (server *BgpServer) notifyBestWatcher(best []*table.Path, multipath [][]*ta
 		}
 	}
 	server.notifyWatcher(WATCH_EVENT_TYPE_BEST_PATH, &WatchEventBestPath{PathList: clonedB, MultiPathList: clonedM})
+}
+
+func (server *BgpServer) notifyPrePolicyUpdateWatcher(peer *Peer, pathList []*table.Path, msg *bgp.BGPMessage, timestamp time.Time, payload []byte) {
+	if !server.isWatched(WATCH_EVENT_TYPE_PRE_UPDATE) || peer == nil {
+		return
+	}
+	cloned := clonePathList(pathList)
+	if len(cloned) == 0 {
+		return
+	}
+	_, y := peer.fsm.capMap[bgp.BGP_CAP_FOUR_OCTET_AS_NUMBER]
+	l, _ := peer.fsm.LocalHostPort()
+	ev := &WatchEventUpdate{
+		Message:      msg,
+		PeerAS:       peer.fsm.peerInfo.AS,
+		LocalAS:      peer.fsm.peerInfo.LocalAS,
+		PeerAddress:  peer.fsm.peerInfo.Address,
+		LocalAddress: net.ParseIP(l),
+		PeerID:       peer.fsm.peerInfo.ID,
+		FourBytesAs:  y,
+		Timestamp:    timestamp,
+		Payload:      payload,
+		PostPolicy:   false,
+		PathList:     cloned,
+		Neighbor:     peer.ToConfig(false),
+	}
+	server.notifyWatcher(WATCH_EVENT_TYPE_PRE_UPDATE, ev)
 }
 
 func (server *BgpServer) notifyPostPolicyUpdateWatcher(peer *Peer, pathList []*table.Path) {
@@ -986,24 +1013,8 @@ func (server *BgpServer) handleFSMMessage(peer *Peer, e *FsmMsg) {
 				sendFsmOutgoingMsg(peer, nil, notification, true)
 				return
 			}
-			if m.Header.Type == bgp.BGP_MSG_UPDATE && server.isWatched(WATCH_EVENT_TYPE_PRE_UPDATE) {
-				_, y := peer.fsm.capMap[bgp.BGP_CAP_FOUR_OCTET_AS_NUMBER]
-				l, _ := peer.fsm.LocalHostPort()
-				ev := &WatchEventUpdate{
-					Message:      m,
-					PeerAS:       peer.fsm.peerInfo.AS,
-					LocalAS:      peer.fsm.peerInfo.LocalAS,
-					PeerAddress:  peer.fsm.peerInfo.Address,
-					LocalAddress: net.ParseIP(l),
-					PeerID:       peer.fsm.peerInfo.ID,
-					FourBytesAs:  y,
-					Timestamp:    e.timestamp,
-					Payload:      e.payload,
-					PostPolicy:   false,
-					PathList:     clonePathList(pathList),
-					Neighbor:     peer.ToConfig(false),
-				}
-				server.notifyWatcher(WATCH_EVENT_TYPE_PRE_UPDATE, ev)
+			if m.Header.Type == bgp.BGP_MSG_UPDATE {
+				server.notifyPrePolicyUpdateWatcher(peer, pathList, m, e.timestamp, e.payload)
 			}
 
 			if len(pathList) > 0 {
@@ -1285,6 +1296,7 @@ func (s *BgpServer) AddPath(vrfId string, pathList []*table.Path) (uuidBytes []b
 		}
 		if len(pathList) == 1 {
 			pathList[0].AssignNewUUID()
+			uuidBytes = pathList[0].UUID().Bytes()
 		}
 		s.propagateUpdate(nil, pathList)
 		return nil
