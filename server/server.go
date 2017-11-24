@@ -337,7 +337,7 @@ func sendFsmOutgoingMsg(peer *Peer, paths []*table.Path, notification *bgp.BGPMe
 
 func isASLoop(peer *Peer, path *table.Path) bool {
 	for _, as := range path.GetAsList() {
-		if as == peer.fsm.pConf.State.PeerAs {
+		if as == peer.AS() {
 			return true
 		}
 	}
@@ -378,7 +378,7 @@ func filterpath(peer *Peer, path, old *table.Path) *table.Path {
 			ignore = true
 			info := path.GetSource()
 			//if the path comes from eBGP peer
-			if info.AS != peer.fsm.pConf.State.PeerAs {
+			if info.AS != peer.AS() {
 				ignore = false
 			}
 			// RFC4456 8. Avoiding Routing Information Loops
@@ -416,13 +416,19 @@ func filterpath(peer *Peer, path, old *table.Path) *table.Path {
 		}
 
 		if ignore {
-			if !path.IsWithdraw && old != nil && old.GetSource().Address.String() != peer.ID() && old.GetSource().AS != peer.fsm.pConf.State.PeerAs {
-				// we advertise a route from ebgp,
-				// which is the old best. We got the
-				// new best from ibgp. We don't
-				// advertise the new best and need to
-				// withdraw the old.
-				return old.Clone(true)
+			if !path.IsWithdraw && old != nil {
+				oldSource := old.GetSource()
+				if old.IsLocal() || oldSource.Address.String() != peer.ID() && oldSource.AS != peer.AS() {
+					// In this case, we suppose this peer has the same prefix
+					// received from another iBGP peer.
+					// So we withdraw the old best which was injected locally
+					// (from CLI or gRPC for example) in order to avoid the
+					// old best left on peers.
+					// Also, we withdraw the eBGP route which is the old best.
+					// When we got the new best from iBGP, we don't advertise
+					// the new best and need to withdraw the old best.
+					return old.Clone(true)
+				}
 			}
 			log.WithFields(log.Fields{
 				"Topic": "Peer",
@@ -714,7 +720,15 @@ func (server *BgpServer) propagateUpdate(peer *Peer, pathList []*table.Path) {
 		dsts = rib.ProcessPaths(append(pathList, moded...))
 	} else {
 		for idx, path := range pathList {
-			if p := server.policy.ApplyPolicy(table.GLOBAL_RIB_NAME, table.POLICY_DIRECTION_IMPORT, path, nil); p != nil {
+			var options *table.PolicyOptions
+			if peer != nil {
+				options = &table.PolicyOptions{
+					Info: peer.fsm.peerInfo,
+				}
+			} else {
+				options = nil
+			}
+			if p := server.policy.ApplyPolicy(table.GLOBAL_RIB_NAME, table.POLICY_DIRECTION_IMPORT, path, options); p != nil {
 				path = p
 			} else {
 				path = path.Clone(true)
@@ -985,6 +999,7 @@ func (server *BgpServer) handleFSMMessage(peer *Peer, e *FsmMsg) {
 		if peer.fsm.adminState == ADMIN_STATE_DOWN {
 			peer.fsm.pConf.State = config.NeighborState{}
 			peer.fsm.pConf.State.NeighborAddress = peer.fsm.pConf.Config.NeighborAddress
+			peer.fsm.pConf.State.PeerAs = peer.fsm.pConf.Config.PeerAs
 			peer.fsm.pConf.Timers.State = config.TimersState{}
 		}
 		peer.startFSMHandler(server.fsmincomingCh, server.fsmStateCh)
@@ -1271,20 +1286,41 @@ func (server *BgpServer) fixupApiPath(vrfId string, pathList []*table.Path) erro
 			}
 		}
 
-		if path.GetRouteFamily() == bgp.RF_EVPN {
-			nlri := path.GetNlri()
-			evpnNlri := nlri.(*bgp.EVPNNLRI)
-			if evpnNlri.RouteType == bgp.EVPN_ROUTE_TYPE_MAC_IP_ADVERTISEMENT {
-				macIpAdv := evpnNlri.RouteTypeData.(*bgp.EVPNMacIPAdvertisementRoute)
-				etag := macIpAdv.ETag
-				mac := macIpAdv.MacAddress
+		// Address Family specific Handling
+		switch nlri := path.GetNlri().(type) {
+		case *bgp.EVPNNLRI:
+			switch r := nlri.RouteTypeData.(type) {
+			case *bgp.EVPNMacIPAdvertisementRoute:
+				// MAC Mobility Extended Community
 				paths := server.globalRib.GetBestPathList(table.GLOBAL_RIB_NAME, []bgp.RouteFamily{bgp.RF_EVPN})
-				if m := getMacMobilityExtendedCommunity(etag, mac, paths); m != nil {
+				if m := getMacMobilityExtendedCommunity(r.ETag, r.MacAddress, paths); m != nil {
 					path.SetExtCommunities([]bgp.ExtendedCommunityInterface{m}, false)
+				}
+			case *bgp.EVPNEthernetSegmentRoute:
+				// RFC7432: BGP MPLS-Based Ethernet VPN
+				// 7.6. ES-Import Route Target
+				// The value is derived automatically for the ESI Types 1, 2,
+				// and 3, by encoding the high-order 6-octet portion of the 9-octet ESI
+				// Value, which corresponds to a MAC address, in the ES-Import Route
+				// Target.
+				// Note: If the given path already has the ES-Import Route Target,
+				// skips deriving a new one.
+				found := false
+				for _, extComm := range path.GetExtCommunities() {
+					if _, found = extComm.(*bgp.ESImportRouteTarget); found {
+						break
+					}
+				}
+				if !found {
+					switch r.ESI.Type {
+					case bgp.ESI_LACP, bgp.ESI_MSTP, bgp.ESI_MAC:
+						mac := net.HardwareAddr(r.ESI.Value[0:6])
+						rt := &bgp.ESImportRouteTarget{ESImport: mac}
+						path.SetExtCommunities([]bgp.ExtendedCommunityInterface{rt}, false)
+					}
 				}
 			}
 		}
-
 	}
 	return nil
 }
@@ -1748,13 +1784,16 @@ func (server *BgpServer) addNeighbor(c *config.Neighbor) error {
 		return fmt.Errorf("Can't overwrite the existing peer: %s", addr)
 	}
 
+	var pgConf *config.PeerGroup
 	if c.Config.PeerGroup != "" {
-		if err := config.OverwriteNeighborConfigWithPeerGroup(c, server.peerGroupMap[c.Config.PeerGroup].Conf); err != nil {
-			return err
+		pg, ok := server.peerGroupMap[c.Config.PeerGroup]
+		if !ok {
+			return fmt.Errorf("no such peer-group: %s", c.Config.PeerGroup)
 		}
+		pgConf = pg.Conf
 	}
 
-	if err := config.SetDefaultNeighborConfigValues(c, server.bgpConfig.Global.Config.As); err != nil {
+	if err := config.SetDefaultNeighborConfigValues(c, pgConf, &server.bgpConfig.Global); err != nil {
 		return err
 	}
 
@@ -1951,8 +1990,12 @@ func (s *BgpServer) UpdatePeerGroup(pg *config.PeerGroup) (needsSoftResetIn bool
 
 func (s *BgpServer) updateNeighbor(c *config.Neighbor) (needsSoftResetIn bool, err error) {
 	if c.Config.PeerGroup != "" {
-		if err := config.OverwriteNeighborConfigWithPeerGroup(c, s.peerGroupMap[c.Config.PeerGroup].Conf); err != nil {
-			return needsSoftResetIn, err
+		if pg, ok := s.peerGroupMap[c.Config.PeerGroup]; ok {
+			if err := config.SetDefaultNeighborConfigValues(c, pg.Conf, &s.bgpConfig.Global); err != nil {
+				return needsSoftResetIn, err
+			}
+		} else {
+			return needsSoftResetIn, fmt.Errorf("no such peer-group: %s", c.Config.PeerGroup)
 		}
 	}
 

@@ -101,22 +101,45 @@ func isLocalLinkLocalAddress(ifindex int, addr net.IP) (bool, error) {
 	return false, nil
 }
 
-func SetDefaultNeighborConfigValues(n *Neighbor, asn uint32) error {
-	return setDefaultNeighborConfigValuesWithViper(nil, n, asn)
+func SetDefaultNeighborConfigValues(n *Neighbor, pg *PeerGroup, g *Global) error {
+	// Determines this function is called against the same Neighbor struct,
+	// and if already called, returns immediately.
+	if n.State.LocalAs != 0 {
+		return nil
+	}
+
+	return setDefaultNeighborConfigValuesWithViper(nil, n, g, pg)
 }
 
-func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, asn uint32) error {
+func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Global, pg *PeerGroup) error {
+	if n == nil {
+		return fmt.Errorf("neighbor config is nil")
+	}
+	if g == nil {
+		return fmt.Errorf("global config is nil")
+	}
+
 	if v == nil {
-		// Determines this function is called against the same Neighbor struct,
-		// and if already called, returns immediately.
-		if n.State.LocalAs != 0 {
-			return nil
-		}
 		v = viper.New()
 	}
 
+	if pg != nil {
+		if err := OverwriteNeighborConfigWithPeerGroup(n, pg); err != nil {
+			return err
+		}
+	}
+
+	if n.Config.PeerAs == 0 {
+		return fmt.Errorf("peer-as is not set for %s", n.Config.NeighborAddress)
+	}
+
 	if n.Config.LocalAs == 0 {
-		n.Config.LocalAs = asn
+		n.Config.LocalAs = g.Config.As
+		if !g.Confederation.Config.Enabled || n.IsConfederation(g) {
+			n.Config.LocalAs = g.Config.As
+		} else {
+			n.Config.LocalAs = g.Confederation.Config.Identifier
+		}
 	}
 	n.State.LocalAs = n.Config.LocalAs
 
@@ -316,45 +339,6 @@ func setDefaultPolicyConfigValuesWithViper(v *viper.Viper, p *PolicyDefinition) 
 	return nil
 }
 
-func validatePeerGroupConfig(n *Neighbor, b *BgpConfigSet) error {
-	name := n.Config.PeerGroup
-	if name == "" {
-		return nil
-	}
-
-	pg, err := getPeerGroup(name, b)
-	if err != nil {
-		return err
-	}
-
-	if pg.Config.PeerAs != 0 && n.Config.PeerAs != 0 {
-		return fmt.Errorf("Cannot configure remote-as for members. PeerGroup AS %d.", pg.Config.PeerAs)
-	}
-	return nil
-}
-
-func getPeerGroup(n string, b *BgpConfigSet) (*PeerGroup, error) {
-	if n == "" {
-		return nil, fmt.Errorf("peer-group name is not configured")
-	}
-	for _, pg := range b.PeerGroups {
-		if n == pg.Config.PeerGroupName {
-			return &pg, nil
-		}
-	}
-	return nil, fmt.Errorf("No such peer-group: %s", n)
-}
-
-func validateDynamicNeighborConfig(d *DynamicNeighborConfig, b *BgpConfigSet) error {
-	if _, err := getPeerGroup(d.PeerGroup, b); err != nil {
-		return err
-	}
-	if _, _, err := net.ParseCIDR(d.Prefix); err != nil {
-		return fmt.Errorf("Invalid Dynamic Neighbor prefix %s", d.Prefix)
-	}
-	return nil
-}
-
 func setDefaultConfigValuesWithViper(v *viper.Viper, b *BgpConfigSet) error {
 	if v == nil {
 		v = viper.New()
@@ -399,26 +383,32 @@ func setDefaultConfigValuesWithViper(v *viper.Viper, b *BgpConfigSet) error {
 	}
 
 	for idx, n := range b.Neighbors {
-		if err := validatePeerGroupConfig(&n, b); err != nil {
-			return err
-		}
-
 		vv := viper.New()
 		if len(list) > idx {
 			vv.Set("neighbor", list[idx])
 		}
-		if err := setDefaultNeighborConfigValuesWithViper(vv, &n, b.Global.Config.As); err != nil {
+
+		pg, err := b.getPeerGroup(n.Config.PeerGroup)
+		if err != nil {
+			return nil
+		}
+
+		if pg != nil {
+			identifier := vv.Get("neighbor.config.neighbor-address")
+			if identifier == nil {
+				identifier = vv.Get("neighbor.config.neighbor-interface")
+			}
+			RegisterConfiguredFields(identifier.(string), list[idx])
+		}
+
+		if err := setDefaultNeighborConfigValuesWithViper(vv, &n, &b.Global, pg); err != nil {
 			return err
 		}
 		b.Neighbors[idx] = n
-
-		if n.Config.PeerGroup != "" {
-			RegisterConfiguredFields(vv.Get("neighbor.config.neighbor-address").(string), list[idx])
-		}
 	}
 
 	for _, d := range b.DynamicNeighbors {
-		if err := validateDynamicNeighborConfig(&d.Config, b); err != nil {
+		if err := d.validate(b); err != nil {
 			return err
 		}
 	}
@@ -451,7 +441,7 @@ func setDefaultConfigValuesWithViper(v *viper.Viper, b *BgpConfigSet) error {
 func OverwriteNeighborConfigWithPeerGroup(c *Neighbor, pg *PeerGroup) error {
 	v := viper.New()
 
-	val, ok := configuredFields[c.State.NeighborAddress]
+	val, ok := configuredFields[c.Config.NeighborAddress]
 	if ok {
 		v.Set("neighbor", val)
 	} else {
