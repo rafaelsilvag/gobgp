@@ -25,6 +25,8 @@ _python: &_python
 _docker: &_docker
   <<: *_python
   sudo: required
+  dist: trusty
+  group: deprecated-2017Q4
   before_install:
     - test $TRAVIS_OS_NAME == "linux" && sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
     - test $TRAVIS_OS_NAME == "linux" && sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
@@ -57,15 +59,33 @@ matrix:
 #
 # Cross-compile
 #
+# Note: We use "before_script" to enable "go env" settings. The following keeps
+# "env" sections as just markers of Travis-CI Web UI.
+# See https://github.com/travis-ci/travis-ci/issues/6126
     - <<: *_build
       env:
-        - GOOS=windows
+        - GOOS="windows"
+      before_script:
+        - export GOOS="windows"
+        - go env
     - <<: *_build
       env:
-        - GOOS=freebsd
+        - GOOS="freebsd"
+      before_script:
+        - export GOOS="freebsd"
+        - go env
     - <<: *_build
       env:
-        - GOOS=darwin
+        - GOOS="darwin"
+      before_script:
+        - export GOOS="darwin"
+        - go env
+    - <<: *_build
+      env:
+        - GOARCH="386"
+      before_script:
+        - export GOARCH="386"
+        - go env
 #
 # Misc
 #
